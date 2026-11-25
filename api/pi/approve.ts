@@ -1,5 +1,11 @@
 import type { Request, Response } from 'express';
-import { readServerDb, sanitizeString, writeServerDb, type ServerPaymentRecord } from './store.ts';
+import {
+  getServerPiApiKey,
+  readServerDb,
+  sanitizeString,
+  writeServerDb,
+  type ServerPaymentRecord,
+} from './_store.ts';
 
 export async function handlePiApprove(req: Request, res: Response) {
   try {
@@ -32,7 +38,7 @@ export async function handlePiApprove(req: Request, res: Response) {
       });
     }
 
-    const piApiKey = (process.env.PI_API_KEY || '').trim();
+    const piApiKey = getServerPiApiKey();
     let mode: ServerPaymentRecord['mode'] = 'testnet-sandbox';
 
     if (piApiKey) {
@@ -124,3 +130,5 @@ export async function handlePiApprove(req: Request, res: Response) {
     return res.status(500).json({ ok: false, error: 'Server error approving Pi payment.' });
   }
 }
+
+export default handlePiApprove;

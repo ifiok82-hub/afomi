@@ -48,6 +48,41 @@ interface WindowWithPi extends Window {
 
 let piInitialized = false;
 
+const safeMetaEnv =
+  typeof import.meta !== 'undefined' && import.meta.env
+    ? (import.meta.env as Record<string, string | undefined>)
+    : {};
+
+export const PI_SANDBOX_MODE = safeMetaEnv.VITE_PI_SANDBOX !== 'false';
+export const PI_DEMO_MODE_DEFAULT = safeMetaEnv.VITE_DEMO_MODE !== 'false';
+
+export async function fetchPiBackendStatus(): Promise<{
+  ok: boolean;
+  network: 'testnet';
+  sandbox: boolean;
+  piApiConfigured: boolean;
+}> {
+  try {
+    const res = await fetch('/api/health');
+    if (!res.ok) {
+      return { ok: false, network: 'testnet', sandbox: true, piApiConfigured: false };
+    }
+    const data = (await res.json()) as {
+      ok?: boolean;
+      sandbox?: boolean;
+      piApiConfigured?: boolean;
+    };
+    return {
+      ok: Boolean(data.ok),
+      network: 'testnet',
+      sandbox: data.sandbox !== false,
+      piApiConfigured: Boolean(data.piApiConfigured),
+    };
+  } catch {
+    return { ok: false, network: 'testnet', sandbox: true, piApiConfigured: false };
+  }
+}
+
 export function isPiBrowserEnvironment(): boolean {
   if (typeof window === 'undefined') return false;
   const ua = window.navigator.userAgent.toLowerCase();
@@ -82,7 +117,7 @@ export function initPiTestnetSdk(): boolean {
   if (!piInitialized) {
     try {
       // Strictly enforce Pi Testnet (sandbox: true). Never use Mainnet.
-      w.Pi.init({ version: '2.0', sandbox: true });
+      w.Pi.init({ version: '2.0', sandbox: PI_SANDBOX_MODE });
       piInitialized = true;
     } catch {
       return false;

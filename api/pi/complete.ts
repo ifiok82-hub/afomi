@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express';
-import { readServerDb, sanitizeString, writeServerDb } from './store.ts';
+import { getServerPiApiKey, readServerDb, sanitizeString, writeServerDb } from './_store.ts';
 
 export async function handlePiComplete(req: Request, res: Response) {
   try {
@@ -52,7 +52,7 @@ export async function handlePiComplete(req: Request, res: Response) {
       });
     }
 
-    const piApiKey = (process.env.PI_API_KEY || '').trim();
+    const piApiKey = getServerPiApiKey();
     if (piApiKey && existing.mode === 'pi-platform-api') {
       const completeRes = await fetch(
         `https://api.minepi.com/v2/payments/${encodeURIComponent(paymentId)}/complete`,
@@ -93,3 +93,5 @@ export async function handlePiComplete(req: Request, res: Response) {
     return res.status(500).json({ ok: false, error: 'Server error completing Pi payment.' });
   }
 }
+
+export default handlePiComplete;

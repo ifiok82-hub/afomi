@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 export type ServerPaymentStatus =
@@ -34,8 +35,18 @@ interface ServerDb {
   deletedAccounts: { email?: string; piUsername?: string; deletedAt: string }[];
 }
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+const DATA_DIR = process.env.VERCEL
+  ? path.join(os.tmpdir(), 'afomi-data')
+  : path.resolve(process.cwd(), 'data');
 const DB_FILE = path.resolve(DATA_DIR, 'afomi_server_db.json');
+
+export function getServerPiApiKey(): string {
+  const raw = (process.env.PI_API_KEY || '').trim();
+  if (!raw || raw.toLowerCase() === 'demo' || raw === 'YOUR_PI_KEY_FROM_VERCEL_PI_API_KEY') {
+    return '';
+  }
+  return raw;
+}
 
 function hashPin(pin: string, salt: string): string {
   return crypto.scryptSync(pin, salt, 32).toString('hex');

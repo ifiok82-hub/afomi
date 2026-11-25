@@ -1,19 +1,21 @@
 import 'dotenv/config';
 import express from 'express';
-import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { handlePiApprove } from './api/pi/approve.ts';
 import { handlePiComplete } from './api/pi/complete.ts';
 import {
+  getServerPiApiKey,
   readServerDb,
   sanitizeString,
   updatePinOnServer,
   verifyPinOnServer,
   writeServerDb,
-} from './api/pi/store.ts';
+} from './api/pi/_store.ts';
 
 async function startServer() {
   const app = express();
+  const httpServer = http.createServer(app);
   app.use(express.json({ limit: '2mb' }));
 
   // Health Check
@@ -23,7 +25,7 @@ async function startServer() {
       app: 'AFOMI',
       network: 'testnet',
       sandbox: true,
-      piApiConfigured: Boolean((process.env.PI_API_KEY || '').trim()),
+      piApiConfigured: Boolean(getServerPiApiKey()),
     });
   });
 
@@ -118,9 +120,14 @@ async function startServer() {
 
   // Vite dev middleware or static dist in production
   if (process.env.NODE_ENV !== 'production') {
+    process.env.DISABLE_HMR = 'true';
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        ws: false,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -133,7 +140,7 @@ async function startServer() {
   }
 
   const port = Number(process.env.PORT || 3000);
-  app.listen(port, '0.0.0.0', () => {
+  httpServer.listen(port, '0.0.0.0', () => {
     console.log(`AFOMI server listening on http://0.0.0.0:${port} (Pi Testnet Mode)`);
   });
 }

@@ -83,7 +83,11 @@ interface AfomiState {
 
 const STORAGE_KEY = 'afomi_marketplace_state_v2';
 
-const ENV_DEMO_MODE = import.meta.env.VITE_DEMO_MODE !== 'false';
+const safeMetaEnv =
+  typeof import.meta !== 'undefined' && import.meta.env
+    ? (import.meta.env as Record<string, string | undefined>)
+    : {};
+const ENV_DEMO_MODE = safeMetaEnv.VITE_DEMO_MODE !== 'false';
 
 const DEFAULT_USER: UserProfile = {
   id: 'usr-1',
