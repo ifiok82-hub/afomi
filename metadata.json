@@ -1,0 +1,6 @@
+{
+  "name": "AFOMI — African Marketplace for Opportunities, Micro-tasks & Innovation",
+  "description": "Earn with your own hand. Grow with your own effort. Escrow-protected African micro-task, marketplace, and subscription platform powered by Pi.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

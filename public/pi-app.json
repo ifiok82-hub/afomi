@@ -1,0 +1,12 @@
+{
+  "name": "AFOMI",
+  "description": "African Marketplace for Opportunities, Micro-tasks and Innovation - Earn with Pi by doing verified tasks, buying/selling, subscriptions",
+  "category": "Marketplace / Earn",
+  "version": "1.0.0",
+  "network": "testnet",
+  "sandbox": true,
+  "icon": "/assets/aistudio/afomi_logo_cutout_d1dd7127.png",
+  "privacy_policy": "/privacy",
+  "terms_of_service": "/terms",
+  "support_email": "support@afomi.app"
+}
