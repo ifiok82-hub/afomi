@@ -17,12 +17,8 @@ import {
   INITIAL_WALLET_TRANSACTIONS,
   PI_TO_NAIRA_RATE,
 } from '../data/seedData';
-import {
-  authenticateWithPiTestnet,
-  checkServerIncompletePayments,
-  executePiPayment,
-  initPiTestnetSdk,
-} from '../lib/piSdk';
+import { initPi, signInWithPi, signOutPi } from '../lib/piAuth';
+import { checkServerIncompletePayments, executePiPayment } from '../lib/piPayments';
 import { sanitizeText, validatePiAmount, validateRequired, validateWorkersCount } from '../lib/validation';
 import {
   ActiveSubscription,
@@ -228,7 +224,7 @@ interface AfomiContextValue extends AfomiState {
   navigate: (route: AppRoute) => void;
   dismissSplash: () => void;
   loginWithPi: () => Promise<{ ok: boolean; error?: string }>;
-  loginWithEmail: (email: string, password: string) => { ok: boolean; error?: string };
+  completePiSignIn: (piUser: { uid: string; username: string }) => void;
   loginAsCeo: () => void;
   completeKyc: (data: {
     name: string;
@@ -323,7 +319,7 @@ export const AfomiProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // Initialize Pi SDK v2.0 & check incomplete payments on app load
   useEffect(() => {
-    void initPiTestnetSdk();
+    void initPi().catch(() => undefined);
     void checkServerIncompletePayments().then((count) => {
       if (count > 0) {
         setState((prev) => ({
@@ -404,75 +400,52 @@ export const AfomiProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setState((prev) => ({ ...prev, hasSeenSplash: true, route: prev.user ? 'home' : 'auth' }));
   };
 
+  const applyVerifiedPiIdentity = (uid: string, rawUsername: string) => {
+    const cleanUid = sanitizeText(uid, 128);
+    const formattedUsername = rawUsername.startsWith('@') ? rawUsername : `@${rawUsername}`;
+    const derivedWallet = `GTEST${cleanUid.replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 18)}AFOMI`;
+
+    setState((prev) => {
+      const nextUser: UserProfile = {
+        ...(prev.user || DEFAULT_USER),
+        name: prev.user?.name || 'Amara Nwosu',
+        piAuthenticated: true,
+        piUid: cleanUid,
+        piUsername: formattedUsername,
+        piWalletAddress: prev.user?.piWalletAddress || derivedWallet,
+        kycVerified: prev.user?.kycVerified ?? false,
+      };
+      const exists = prev.adminUsers.some((u) => u.email === nextUser.email);
+      return {
+        ...prev,
+        hasSeenSplash: true,
+        piAuthLoading: false,
+        user: nextUser,
+        adminUsers: exists
+          ? prev.adminUsers.map((u) => (u.email === nextUser.email ? { ...u, ...nextUser } : u))
+          : [nextUser, ...prev.adminUsers],
+        route: nextUser.kycVerified ? 'home' : 'kyc',
+      };
+    });
+    showToast(`Pi authenticated as ${formattedUsername}.`, 'success');
+  };
+
+  const completePiSignIn = (piUser: { uid: string; username: string }) => {
+    applyVerifiedPiIdentity(piUser.uid, piUser.username);
+  };
+
   const loginWithPi = async (): Promise<{ ok: boolean; error?: string }> => {
     setState((prev) => ({ ...prev, piAuthLoading: true }));
     try {
-      const piAuth = await authenticateWithPiTestnet();
-      setState((prev) => {
-        const nextUser: UserProfile = {
-          ...(prev.user || DEFAULT_USER),
-          name: prev.user?.name || 'Amara Nwosu',
-          piAuthenticated: true,
-          piUid: piAuth.uid,
-          piUsername: piAuth.username,
-          piWalletAddress: piAuth.walletAddress,
-          kycVerified: prev.user?.kycVerified ?? false,
-        };
-        const exists = prev.adminUsers.some((u) => u.email === nextUser.email);
-        return {
-          ...prev,
-          hasSeenSplash: true,
-          piAuthLoading: false,
-          user: nextUser,
-          adminUsers: exists
-            ? prev.adminUsers.map((u) => (u.email === nextUser.email ? { ...u, ...nextUser } : u))
-            : [nextUser, ...prev.adminUsers],
-          route: nextUser.kycVerified ? 'home' : 'kyc',
-        };
-      });
-      showToast(`Pi Testnet authenticated as ${piAuth.username}.`, 'success');
+      const session = await signInWithPi();
+      applyVerifiedPiIdentity(session.uid, session.username);
       return { ok: true };
-    } catch {
+    } catch (err) {
       setState((prev) => ({ ...prev, piAuthLoading: false }));
-      showToast('Pi authentication failed or cancelled.', 'error');
-      return { ok: false, error: 'Pi authentication cancelled.' };
+      const message = err instanceof Error ? err.message : 'Pi authentication failed or cancelled.';
+      showToast(message || 'Pi authentication failed or cancelled.', 'error');
+      return { ok: false, error: message || 'Pi authentication cancelled.' };
     }
-  };
-
-  const loginWithEmail = (email: string, password: string): { ok: boolean; error?: string } => {
-    const cleanEmail = sanitizeText(email, 120).toLowerCase();
-    if (!cleanEmail || !password.trim()) {
-      return { ok: false, error: 'Please enter both email and password.' };
-    }
-    if (cleanEmail === 'ceo@afomi.app' || cleanEmail === 'admin@afomi.app') {
-      if (password !== 'afomi123' && password.length < 4) {
-        return { ok: false, error: 'Invalid CEO password. Use afomi123 for demo.' };
-      }
-      setState((prev) => ({
-        ...prev,
-        hasSeenSplash: true,
-        user: { ...CEO_USER, email: cleanEmail },
-        route: 'ceo',
-      }));
-      showToast('Welcome back, CEO. Executive AI Briefing is ready.', 'success');
-      return { ok: true };
-    }
-    const namePart = cleanEmail.split('@')[0].replace(/[._]/g, ' ');
-    const formattedName = namePart.charAt(0).toUpperCase() + namePart.slice(1);
-    setState((prev) => ({
-      ...prev,
-      hasSeenSplash: true,
-      user: {
-        ...DEFAULT_USER,
-        name: formattedName || 'Afomi Member',
-        email: cleanEmail,
-        kycVerified: false,
-        piAuthenticated: false,
-      },
-      route: 'kyc',
-    }));
-    showToast('Signed in. Connect Pi Network before making Escrow payments.', 'info');
-    return { ok: true };
   };
 
   const loginAsCeo = () => {
@@ -518,6 +491,7 @@ export const AfomiProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const logout = () => {
+    signOutPi();
     void fetch('/api/pi/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => undefined);
     setState((prev) => ({ ...prev, user: null, adminPinUnlocked: false, route: 'auth' }));
     showToast('Signed out of AFOMI.', 'info');
@@ -1656,7 +1630,7 @@ Earn Pi with your own hand: translate African languages, verify retail prices, s
     navigate,
     dismissSplash,
     loginWithPi,
-    loginWithEmail,
+    completePiSignIn,
     loginAsCeo,
     completeKyc,
     logout,

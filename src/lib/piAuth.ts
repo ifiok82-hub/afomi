@@ -1,51 +1,91 @@
-declare global { interface Window { Pi?: any } }
-const APP_STUDIO_LOGIN = "https://backend.appstudio-u7cm9zhmha0ruwv8.piappengine.com/pi/auth/v1/login";
+declare global {
+  interface Window {
+    Pi?: {
+      init: (opts: { version: string }) => Promise<void> | void;
+      authenticate: (
+        scopes: string[],
+        onIncompletePaymentFound: (payment: any) => void
+      ) => Promise<{ accessToken?: string }>;
+    };
+    __AFOMI_PI_SESSION__?: PiSession | null;
+  }
+}
+
+const APP_STUDIO_LOGIN =
+  'https://backend.appstudio-u7cm9zhmha0ruwv8.piappengine.com/pi/auth/v1/login';
+
 export type PiSession = { sessionToken: string; uid: string; username: string };
+
 let piInitPromise: Promise<void> | null = null;
-export function loadPiSdk(): Promise<void> {
-  if (typeof window === "undefined") return Promise.resolve();
-  if ((window as any).Pi) return Promise.resolve();
+
+async function waitForPiSdk(timeoutMs = 4000): Promise<NonNullable<Window['Pi']>> {
+  if (typeof window === 'undefined') {
+    throw new Error('Pi SDK requires a browser environment');
+  }
+  if (window.Pi) return window.Pi;
+
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 80));
+    if (window.Pi) return window.Pi;
+  }
+  throw new Error('Pi SDK not loaded');
+}
+
+export async function initPi(): Promise<void> {
+  if (typeof window === 'undefined') return;
   if (piInitPromise) return piInitPromise;
-  piInitPromise = new Promise((resolve, reject) => {
-    const s = document.createElement("script");
-    s.src = "https://sdk.minepi.com/pi-sdk.js";
-    s.async = true;
-    s.onload = () => resolve();
-    s.onerror = () => reject(new Error("Pi SDK failed to load"));
-    document.head.appendChild(s);
-  });
+  piInitPromise = (async () => {
+    try {
+      const Pi = await waitForPiSdk();
+      await Pi.init({ version: '2.0' });
+    } catch (err) {
+      piInitPromise = null;
+      throw err;
+    }
+  })();
   return piInitPromise;
 }
-export async function initPi(): Promise<void> {
-  await loadPiSdk();
-  await (window as any).Pi.init({ version: "2.0" });
-}
+
 function onIncompletePaymentFound(payment: any) {
-  console.log("AFOMI incomplete payment", payment?.identifier);
+  console.log('AFOMI incomplete payment', payment?.identifier);
 }
+
 export async function signInWithPi(): Promise<PiSession> {
   await initPi();
-  const auth = await (window as any).Pi.authenticate(["username"], onIncompletePaymentFound);
-  const accessToken: string | undefined = auth?.accessToken;
-  if (!accessToken) throw new Error("No accessToken from Pi.authenticate");
+  const Pi = window.Pi;
+  if (!Pi) throw new Error('Pi SDK unavailable');
+
+  const auth = await Pi.authenticate(['username'], onIncompletePaymentFound);
+  const accessToken = auth?.accessToken;
+  if (!accessToken) throw new Error('No accessToken returned by Pi authentication');
+
   const res = await fetch(APP_STUDIO_LOGIN, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ accessToken }),
   });
-  if (!res.ok) throw new Error("App Studio login failed: " + res.status);
+  if (!res.ok) throw new Error('App Studio login failed: ' + res.status);
+
   const data = await res.json();
   const sessionToken = data?.sessionToken as string | undefined;
   const uid = data?.user?.uid as string | undefined;
   const username = data?.user?.username as string | undefined;
-  if (!sessionToken || !uid || !username) throw new Error("Invalid App Studio response");
+  if (!sessionToken || !uid || !username) {
+    throw new Error('Invalid App Studio response');
+  }
+
   const session: PiSession = { sessionToken, uid, username };
-  (window as any).__AFOMI_PI_SESSION__ = session;
+  window.__AFOMI_PI_SESSION__ = session;
   return session;
 }
+
 export function getPiSession(): PiSession | null {
-  return (window as any).__AFOMI_PI_SESSION__ ?? null;
+  return typeof window !== 'undefined' ? (window.__AFOMI_PI_SESSION__ ?? null) : null;
 }
+
 export function signOutPi() {
-  (window as any).__AFOMI_PI_SESSION__ = null;
+  if (typeof window !== 'undefined') {
+    window.__AFOMI_PI_SESSION__ = null;
+  }
 }

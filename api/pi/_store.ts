@@ -42,7 +42,7 @@ const DB_FILE = path.resolve(DATA_DIR, 'afomi_server_db.json');
 
 export function getServerPiApiKey(): string {
   const raw = (process.env.PI_API_KEY || '').trim();
-  if (!raw || raw.toLowerCase() === 'demo' || raw === 'YOUR_PI_KEY_FROM_VERCEL_PI_API_KEY') {
+  if (!raw || raw.toLowerCase() === 'demo') {
     return '';
   }
   return raw;

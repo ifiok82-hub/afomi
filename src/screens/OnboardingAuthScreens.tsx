@@ -4,7 +4,6 @@ import {
   Briefcase,
   CheckCircle2,
   CreditCard,
-  Loader2,
   Lock,
   ShieldCheck,
   ShoppingBag,
@@ -13,7 +12,13 @@ import {
 import { useAfomi } from '../context/AfomiContext';
 import { AfomiImage, AfomiLogo } from '../components/AfomiUI';
 import { AdminPinModal } from '../components/AdminPinModal';
+import PiLoginButton from '../components/PiLoginButton';
 import { GENERATED_IMAGES } from '../data/seedData';
+
+function hasCeoDemoQueryParam(): boolean {
+  if (typeof window === 'undefined') return false;
+  return new URLSearchParams(window.location.search).get('demo') === 'ceo';
+}
 
 const SLIDES = [
   {
@@ -46,6 +51,7 @@ export const SplashScreen: React.FC = () => {
   const { dismissSplash, loginAsCeo, navigate, isAdminUnlocked } = useAfomi();
   const [slideIdx, setSlideIdx] = useState(0);
   const [pinOpen, setPinOpen] = useState(false);
+  const [ceoDemoVisible, setCeoDemoVisible] = useState(() => hasCeoDemoQueryParam() || isAdminUnlocked);
   const tapRef = useRef<number[]>([]);
   const current = SLIDES[slideIdx];
   const Icon = current.icon;
@@ -57,6 +63,7 @@ export const SplashScreen: React.FC = () => {
     tapRef.current = recent;
     if (recent.length >= 7) {
       tapRef.current = [];
+      setCeoDemoVisible(true);
       if (isAdminUnlocked) navigate('admin-dashboard');
       else setPinOpen(true);
     }
@@ -160,14 +167,16 @@ export const SplashScreen: React.FC = () => {
               <span>Get Started</span>
               <ArrowRight className="w-4 h-4" />
             </button>
-            <button
-              type="button"
-              onClick={loginAsCeo}
-              className="px-5 py-3.5 min-h-[48px] rounded-2xl bg-[#FFC107] hover:bg-[#f0b400] text-[#2B1F00] font-semibold text-sm inline-flex items-center gap-2 transition-colors cursor-pointer"
-            >
-              <Sparkles className="w-4 h-4" />
-              <span>CEO Demo Access</span>
-            </button>
+            {ceoDemoVisible && (
+              <button
+                type="button"
+                onClick={loginAsCeo}
+                className="px-5 py-3.5 min-h-[48px] rounded-2xl bg-[#FFC107] hover:bg-[#f0b400] text-[#2B1F00] font-semibold text-sm inline-flex items-center gap-2 transition-colors cursor-pointer"
+              >
+                <Sparkles className="w-4 h-4" />
+                <span>CEO Demo Access</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -209,11 +218,9 @@ export const SplashScreen: React.FC = () => {
 };
 
 export const AuthScreen: React.FC = () => {
-  const { loginWithPi, loginWithEmail, loginAsCeo, navigate, piAuthLoading, isAdminUnlocked } = useAfomi();
-  const [email, setEmail] = useState('amara@afomi.app');
-  const [password, setPassword] = useState('afomi123');
-  const [error, setError] = useState('');
+  const { completePiSignIn, loginAsCeo, navigate, isAdminUnlocked } = useAfomi();
   const [pinOpen, setPinOpen] = useState(false);
+  const [ceoDemoVisible, setCeoDemoVisible] = useState(() => hasCeoDemoQueryParam() || isAdminUnlocked);
   const tapRef = useRef<number[]>([]);
 
   const handleAuthLogoTap = () => {
@@ -223,15 +230,10 @@ export const AuthScreen: React.FC = () => {
     tapRef.current = recent;
     if (recent.length >= 7) {
       tapRef.current = [];
+      setCeoDemoVisible(true);
       if (isAdminUnlocked) navigate('admin-dashboard');
       else setPinOpen(true);
     }
-  };
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const res = loginWithEmail(email, password);
-    if (!res.ok) setError(res.error || 'Unable to sign in');
   };
 
   return (
@@ -251,84 +253,24 @@ export const AuthScreen: React.FC = () => {
         </div>
 
         <h1 className="text-2xl font-extrabold text-[#1A1625]">Sign in to AFOMI</h1>
-        <p className="text-sm text-[#645E72] mt-1">
-          Authenticate with Pi Network (Testnet) to enable Escrow payments and verified earnings.
+        <p className="text-sm text-[#645E72] mt-1 mb-6">
+          Authenticate with Pi Network to enable Escrow payments and verified earnings.
         </p>
 
-        {/* Real Pi SDK Testnet Authenticate */}
-        <button
-          type="button"
-          disabled={piAuthLoading}
-          onClick={() => void loginWithPi()}
-          className="mt-6 w-full min-h-[48px] rounded-2xl bg-[#6A1B9A] hover:bg-[#581482] disabled:opacity-60 text-white font-semibold text-sm flex items-center justify-center gap-2.5 transition-colors cursor-pointer"
-        >
-          {piAuthLoading ? (
-            <Loader2 className="w-5 h-5 animate-spin text-[#FFC107]" />
-          ) : (
-            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-[#FFC107] text-[#2B1F00] font-extrabold text-xs">
-              π
-            </span>
-          )}
-          <span>{piAuthLoading ? 'Connecting Pi Testnet...' : 'Continue with Pi Authentication (Testnet)'}</span>
-        </button>
+        <PiLoginButton onSignedIn={(u) => completePiSignIn(u)} />
 
-        {/* Login as CEO Demo Button */}
-        <button
-          type="button"
-          onClick={loginAsCeo}
-          className="mt-3 w-full min-h-[48px] rounded-2xl bg-[#FFC107] hover:bg-[#f0b400] text-[#2B1F00] font-bold text-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
-        >
-          <Sparkles className="w-4 h-4" />
-          <span>Login as CEO (ceo@afomi.app)</span>
-        </button>
-
-        <div className="my-6 flex items-center gap-3 text-xs text-[#645E72]">
-          <div className="h-px flex-1 bg-[#E7E3EE]" />
-          <span>or sign in with email</span>
-          <div className="h-px flex-1 bg-[#E7E3EE]" />
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-xs font-semibold text-[#1A1625] mb-1.5">Email Address</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => {
-                setEmail(e.target.value);
-                setError('');
-              }}
-              placeholder="you@example.com or ceo@afomi.app"
-              className="w-full min-h-[44px] px-3.5 rounded-xl border border-[#E7E3EE] text-sm focus:outline-none focus:border-[#6A1B9A]"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-[#1A1625] mb-1.5">Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => {
-                setPassword(e.target.value);
-                setError('');
-              }}
-              placeholder="••••••••"
-              className="w-full min-h-[44px] px-3.5 rounded-xl border border-[#E7E3EE] text-sm focus:outline-none focus:border-[#6A1B9A]"
-              required
-            />
-          </div>
-
-          {error && <p className="text-xs font-medium text-rose-600">{error}</p>}
-
+        {ceoDemoVisible && (
           <button
-            type="submit"
-            className="w-full min-h-[46px] rounded-2xl border border-[#6A1B9A] text-[#6A1B9A] hover:bg-[#F5EEFA] font-semibold text-sm transition-colors cursor-pointer"
+            type="button"
+            onClick={loginAsCeo}
+            className="mt-3 w-full min-h-[48px] rounded-2xl bg-[#FFC107] hover:bg-[#f0b400] text-[#2B1F00] font-bold text-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
           >
-            Sign In with Email
+            <Sparkles className="w-4 h-4" />
+            <span>Login as CEO</span>
           </button>
-        </form>
+        )}
 
-        <p className="mt-4 text-[11px] text-center text-[#645E72]">
+        <p className="mt-6 text-[11px] text-center text-[#645E72]">
           By continuing you agree to{' '}
           <button
             type="button"
@@ -347,11 +289,6 @@ export const AuthScreen: React.FC = () => {
           </button>
           .
         </p>
-
-        <div className="mt-4 rounded-xl bg-[#FAF8FC] border border-[#E7E3EE] p-3.5 text-xs text-[#645E72]">
-          <p className="font-semibold text-[#1A1625]">Demo CEO Credentials</p>
-          <p className="mt-0.5 tabular-nums">Email: ceo@afomi.app · Password: afomi123</p>
-        </div>
       </div>
     </div>
   );
