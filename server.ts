@@ -4,6 +4,9 @@ import http from 'node:http';
 import path from 'node:path';
 import { handlePiApprove } from './api/pi/approve.ts';
 import { handlePiComplete } from './api/pi/complete.ts';
+import { handlePiLogin } from './api/pi/login.ts';
+import { handlePiLogout } from './api/pi/logout.ts';
+import { clearPiSessionCookie, getVerifiedSessionFromRequest } from './api/pi/_session.ts';
 import {
   getServerPiApiKey,
   readServerDb,
@@ -18,6 +21,26 @@ async function startServer() {
   const httpServer = http.createServer(app);
   app.use(express.json({ limit: '2mb' }));
 
+  const frameAncestors =
+    process.env.NODE_ENV === 'production'
+      ? "'self' https://*.pinet.com https://*.minepi.com"
+      : "'self' https://*.pinet.com https://*.minepi.com https://aistudio.google.com https://*.usercontent.goog";
+  const cspHeader = [
+    "default-src 'self'",
+    "script-src 'self' https://sdk.minepi.com",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data: blob: https:",
+    "connect-src 'self' https://socialchain.app",
+    `frame-ancestors ${frameAncestors}`,
+  ].join('; ');
+
+  app.use((_req, res, next) => {
+    res.removeHeader('X-Frame-Options');
+    res.setHeader('Content-Security-Policy', cspHeader);
+    next();
+  });
+
   // Health Check
   app.get('/api/health', (_req, res) => {
     res.json({
@@ -29,7 +52,9 @@ async function startServer() {
     });
   });
 
-  // Pi Testnet Payment Endpoints
+  // Pi Auth & Payment Endpoints
+  app.post('/api/pi/login', handlePiLogin);
+  app.post('/api/pi/logout', handlePiLogout);
   app.post('/api/pi/approve', handlePiApprove);
   app.post('/api/pi/complete', handlePiComplete);
 
@@ -107,7 +132,8 @@ async function startServer() {
   // Account Deletion Endpoint (Pi Core Team Compliance)
   app.post('/api/account/delete', (req, res) => {
     const email = sanitizeString(req.body?.email, 120);
-    const piUsername = sanitizeString(req.body?.piUsername, 80);
+    const verifiedSession = getVerifiedSessionFromRequest(req);
+    const piUsername = verifiedSession?.username;
     const db = readServerDb();
     db.deletedAccounts.unshift({
       email: email || undefined,
@@ -115,6 +141,7 @@ async function startServer() {
       deletedAt: new Date().toISOString(),
     });
     writeServerDb(db);
+    clearPiSessionCookie(req, res);
     res.json({ ok: true, message: 'User account and associated personal data deleted.' });
   });
 
@@ -134,8 +161,11 @@ async function startServer() {
   } else {
     const distDir = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distDir));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(distDir, 'index.html'));
+    app.get('*', (req, res) => {
+      if (req.path === '/pi-app-validation.txt' || req.path === '/validation-key.txt') {
+        return res.status(404).type('text/plain').send('Not found');
+      }
+      return res.sendFile(path.join(distDir, 'index.html'));
     });
   }
 

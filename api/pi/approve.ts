@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express';
+import { getVerifiedSessionFromRequest } from './_session.ts';
 import {
   getServerPiApiKey,
   readServerDb,
@@ -12,8 +13,9 @@ export async function handlePiApprove(req: Request, res: Response) {
     const paymentId = sanitizeString(req.body?.paymentId, 128);
     const amountRaw = Number(req.body?.amount);
     const memo = sanitizeString(req.body?.memo, 240) || 'AFOMI Escrow Testnet Payment';
-    const piUsername = sanitizeString(req.body?.piUsername, 80);
-    const userUid = sanitizeString(req.body?.userUid, 128);
+    const verifiedSession = getVerifiedSessionFromRequest(req);
+    const piUsername = verifiedSession?.username;
+    const userUid = verifiedSession?.uid;
     const metadata =
       req.body?.metadata && typeof req.body.metadata === 'object' ? req.body.metadata : {};
 

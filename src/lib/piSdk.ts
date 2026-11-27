@@ -26,13 +26,13 @@ export interface PiPaymentOutcome {
 
 interface WindowWithPi extends Window {
   Pi?: {
-    init: (opts: { version: string; sandbox: boolean }) => void;
+    init: (opts: { version: string }) => Promise<void> | void;
     authenticate: (
       scopes: string[],
       onIncompletePaymentFound: (payment: { identifier: string; transaction?: { txid?: string } }) => void
     ) => Promise<{
       accessToken: string;
-      user: { uid: string; username: string; wallet_address?: string };
+      user?: { uid?: string; username?: string; wallet_address?: string };
     }>;
     createPayment: (
       paymentData: { amount: number; memo: string; metadata: Record<string, unknown> },
@@ -47,6 +47,7 @@ interface WindowWithPi extends Window {
 }
 
 let piInitialized = false;
+let piInitPromise: Promise<boolean> | null = null;
 
 const safeMetaEnv =
   typeof import.meta !== 'undefined' && import.meta.env
@@ -110,20 +111,26 @@ export async function handleIncompletePayment(payment: {
   }
 }
 
-export function initPiTestnetSdk(): boolean {
+export async function initPiTestnetSdk(): Promise<boolean> {
   if (typeof window === 'undefined') return false;
   const w = window as WindowWithPi;
   if (!w.Pi) return false;
-  if (!piInitialized) {
+  if (piInitialized) return true;
+  if (piInitPromise) return piInitPromise;
+
+  piInitPromise = (async () => {
     try {
-      // Strictly enforce Pi Testnet (sandbox: true). Never use Mainnet.
-      w.Pi.init({ version: '2.0', sandbox: PI_SANDBOX_MODE });
+      // Do not pass "sandbox" - Pi SDK v2.0 detects environment automatically.
+      await w.Pi!.init({ version: '2.0' });
       piInitialized = true;
+      return true;
     } catch {
+      piInitPromise = null;
       return false;
     }
-  }
-  return true;
+  })();
+
+  return piInitPromise;
 }
 
 export async function checkServerIncompletePayments(): Promise<number> {
@@ -145,8 +152,42 @@ export async function checkServerIncompletePayments(): Promise<number> {
   }
 }
 
+async function exchangeAccessTokenWithServer(accessToken: string): Promise<{
+  uid: string;
+  username: string;
+  sessionToken?: string;
+}> {
+  const loginRes = await fetch('/api/pi/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ accessToken }),
+  });
+
+  if (!loginRes.ok) {
+    const err = (await loginRes.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error || 'Server failed to validate Pi accessToken.');
+  }
+
+  const data = (await loginRes.json()) as {
+    ok?: boolean;
+    sessionToken?: string;
+    user?: { uid?: string; username?: string };
+  };
+
+  if (!data.ok || !data.user?.uid || !data.user?.username) {
+    throw new Error('Invalid verified identity returned by server.');
+  }
+
+  return {
+    uid: data.user.uid,
+    username: data.user.username,
+    sessionToken: data.sessionToken,
+  };
+}
+
 export async function authenticateWithPiTestnet(): Promise<PiAuthResult> {
-  const sdkReady = initPiTestnetSdk();
+  const sdkReady = await initPiTestnetSdk();
   const w = window as WindowWithPi;
 
   if (sdkReady && w.Pi && isPiBrowserEnvironment()) {
@@ -156,18 +197,20 @@ export async function authenticateWithPiTestnet(): Promise<PiAuthResult> {
         void handleIncompletePayment(incomplete);
       }
     );
+    // Keep only accessToken; ignore browser-supplied uid & username and trust only /api/pi/login (App Studio).
+    const verified = await exchangeAccessTokenWithServer(auth.accessToken);
     return {
-      uid: auth.user.uid,
-      username: auth.user.username.startsWith('@') ? auth.user.username : `@${auth.user.username}`,
+      uid: verified.uid,
+      username: verified.username.startsWith('@') ? verified.username : `@${verified.username}`,
       walletAddress:
-        auth.user.wallet_address ||
-        `GTEST${auth.user.uid.replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 18)}AFOMI`,
-      accessToken: auth.accessToken,
+        auth.user?.wallet_address ||
+        `GTEST${verified.uid.replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 18)}AFOMI`,
+      accessToken: verified.sessionToken || auth.accessToken,
       mode: 'pi-browser',
     };
   }
 
-  // Testnet Sandbox Bridge when running outside Pi Browser / PiNet
+  // When running outside Pi Browser / PiNet, attempt SDK auth briefly before falling back to local Testnet sandbox preview
   if (sdkReady && w.Pi) {
     try {
       const auth = await Promise.race([
@@ -178,17 +221,18 @@ export async function authenticateWithPiTestnet(): Promise<PiAuthResult> {
           setTimeout(() => reject(new Error('Pi Browser host not detected')), 1600)
         ),
       ]);
+      const verified = await exchangeAccessTokenWithServer(auth.accessToken);
       return {
-        uid: auth.user.uid,
-        username: auth.user.username.startsWith('@') ? auth.user.username : `@${auth.user.username}`,
+        uid: verified.uid,
+        username: verified.username.startsWith('@') ? verified.username : `@${verified.username}`,
         walletAddress:
-          auth.user.wallet_address ||
-          `GTEST${auth.user.uid.replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 18)}AFOMI`,
-        accessToken: auth.accessToken,
+          auth.user?.wallet_address ||
+          `GTEST${verified.uid.replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 18)}AFOMI`,
+        accessToken: verified.sessionToken || auth.accessToken,
         mode: 'pi-browser',
       };
     } catch {
-      // Fall through cleanly to Testnet sandbox session below
+      // Fall through cleanly to local Testnet sandbox preview when Pi Browser host is unavailable
     }
   }
 
@@ -203,7 +247,7 @@ export async function authenticateWithPiTestnet(): Promise<PiAuthResult> {
 }
 
 export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPaymentOutcome> {
-  const { amount, memo, metadata, userUid, piUsername, simulateFailure, onPhase } = params;
+  const { amount, memo, metadata, simulateFailure, onPhase } = params;
 
   if (!Number.isFinite(amount) || amount < 0.1 || amount > 1000) {
     return {
@@ -232,7 +276,7 @@ export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPa
     };
   }
 
-  const sdkReady = initPiTestnetSdk();
+  const sdkReady = await initPiTestnetSdk();
   const w = window as WindowWithPi;
 
   if (sdkReady && w.Pi && isPiBrowserEnvironment()) {
@@ -251,13 +295,12 @@ export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPa
               const res = await fetch('/api/pi/approve', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
                 body: JSON.stringify({
                   paymentId,
                   amount,
                   memo,
                   metadata,
-                  userUid,
-                  piUsername,
                 }),
               });
               if (!res.ok) {
@@ -274,6 +317,7 @@ export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPa
               const res = await fetch('/api/pi/complete', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
                 body: JSON.stringify({ paymentId, txid, amount }),
               });
               const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
@@ -341,13 +385,12 @@ export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPa
     const approveRes = await fetch('/api/pi/approve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
       body: JSON.stringify({
         paymentId,
         amount,
         memo,
         metadata: { ...metadata, network: 'testnet' },
-        userUid,
-        piUsername,
       }),
     });
     const approveData = (await approveRes.json().catch(() => ({}))) as { ok?: boolean; error?: string };
@@ -363,6 +406,7 @@ export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPa
     const completeRes = await fetch('/api/pi/complete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
       body: JSON.stringify({ paymentId, txid, amount }),
     });
     const completeData = (await completeRes.json().catch(() => ({}))) as { ok?: boolean; error?: string };

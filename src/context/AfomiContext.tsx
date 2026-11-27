@@ -321,9 +321,9 @@ export const AfomiProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return createDefaultState(ENV_DEMO_MODE);
   });
 
-  // Initialize Pi Testnet SDK & check incomplete payments on app load
+  // Initialize Pi SDK v2.0 & check incomplete payments on app load
   useEffect(() => {
-    initPiTestnetSdk();
+    void initPiTestnetSdk();
     void checkServerIncompletePayments().then((count) => {
       if (count > 0) {
         setState((prev) => ({
@@ -518,18 +518,19 @@ export const AfomiProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const logout = () => {
+    void fetch('/api/pi/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => undefined);
     setState((prev) => ({ ...prev, user: null, adminPinUnlocked: false, route: 'auth' }));
     showToast('Signed out of AFOMI.', 'info');
   };
 
   const deleteMyAccount = async () => {
     const email = state.user?.email;
-    const piUsername = state.user?.piUsername;
     try {
       await fetch('/api/account/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, piUsername }),
+        credentials: 'same-origin',
+        body: JSON.stringify({ email }),
       });
     } catch {
       // proceed with client wipe cleanly
