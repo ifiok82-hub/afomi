@@ -21,11 +21,6 @@ async function startServer() {
   const httpServer = http.createServer(app);
   app.use(express.json({ limit: '2mb' }));
 
-  app.use((_req, res, next) => {
-    res.removeHeader('X-Frame-Options');
-    next();
-  });
-
   // Health Check
   app.get('/api/health', (_req, res) => {
     res.json({
