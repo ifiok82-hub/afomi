@@ -58,6 +58,7 @@ export const TasksPage: React.FC<{ initialTaskId?: string | null }> = ({ initial
   const [reportTarget, setReportTarget] = useState<Task | null>(null);
   const [reportReason, setReportReason] = useState('');
   const [payingTaskId, setPayingTaskId] = useState<string | null>(null);
+  const [paymentError, setPaymentError] = useState('');
 
   const handlePayEscrow = async (
     e: React.MouseEvent<HTMLButtonElement>,
@@ -68,6 +69,7 @@ export const TasksPage: React.FC<{ initialTaskId?: string | null }> = ({ initial
     if (payingTaskId) return;
     const pricePi = Number(task.pricePi ?? task.payPerWorker);
     setPayingTaskId(task.id);
+    setPaymentError('');
     try {
       await authenticatePiSession();
       await payForTask({
@@ -83,6 +85,7 @@ export const TasksPage: React.FC<{ initialTaskId?: string | null }> = ({ initial
       console.error(err);
       const msg = err instanceof Error ? err.message : String(err || 'Unknown Pi error');
       const errorMsg = `Payment failed: ${msg}`;
+      setPaymentError(errorMsg);
       showToast(errorMsg, 'error');
       window.alert(errorMsg);
     } finally {
@@ -227,6 +230,12 @@ export const TasksPage: React.FC<{ initialTaskId?: string | null }> = ({ initial
               ))}
             </div>
           </div>
+
+          {paymentError && (
+            <div className="rounded-xl bg-rose-50 border border-rose-200 p-3 text-xs font-semibold text-rose-700">
+              {paymentError}
+            </div>
+          )}
 
           {filteredTasks.length === 0 ? (
             <div className="rounded-2xl bg-white border border-[#E7E3EE] p-10 text-center">
@@ -467,6 +476,12 @@ export const TasksPage: React.FC<{ initialTaskId?: string | null }> = ({ initial
                   </div>
                 </div>
               </div>
+
+              {paymentError && (
+                <div className="rounded-xl bg-rose-50 border border-rose-200 p-3 text-xs font-semibold text-rose-700">
+                  {paymentError}
+                </div>
+              )}
 
               <button
                 type="button"

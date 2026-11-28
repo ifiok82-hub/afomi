@@ -1,5 +1,5 @@
 const PI_API_BASE = 'https://api.minepi.com/v2/payments';
-const PI_TIMEOUT_MS = 8000;
+const TIMEOUT = 8000;
 
 function jsonResponse(statusCode, body) {
   return {
@@ -11,7 +11,7 @@ function jsonResponse(statusCode, body) {
 
 async function fetchWithTimeout(url, options) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), PI_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), TIMEOUT);
   try {
     return await fetch(url, { ...options, signal: controller.signal });
   } finally {
@@ -29,7 +29,11 @@ export const handler = async (event) => {
     try {
       body = JSON.parse(event.body || '{}');
     } catch (e) {
-      return jsonResponse(400, { ok: false, error: 'Invalid JSON request body', detail: e.message });
+      return jsonResponse(400, {
+        ok: false,
+        error: 'Invalid JSON request body',
+        detail: e && e.message ? e.message : String(e),
+      });
     }
 
     const paymentId = typeof body.paymentId === 'string' ? body.paymentId.trim() : '';
@@ -60,15 +64,15 @@ export const handler = async (event) => {
     } catch (e) {
       if (e && e.name === 'AbortError') {
         console.error('pi-complete GET timeout', paymentId);
-        return jsonResponse(504, { error: 'Pi API timeout, try again' });
+        return jsonResponse(504, { error: 'Pi API timeout, tap Pay again' });
       }
       throw e;
     }
 
     if (verifyRes.status === 404) {
-      console.error('pi-complete GET 404 payment_not_found', paymentId);
+      console.error('pi-complete GET 404 payment_not_found_stale', paymentId);
       return jsonResponse(400, {
-        error: 'payment_not_found - stale payment or wrong API key for afomii.netlify.app, start fresh payment',
+        error: 'payment_not_found_stale - cancel old payment, start fresh',
       });
     }
 
@@ -97,7 +101,7 @@ export const handler = async (event) => {
     const commission = Number((amount * 0.08).toFixed(6));
 
     if (payment.status && payment.status.developer_completed) {
-      console.log('pi-complete already completed', paymentId);
+      console.log('pi-complete done', paymentId, '(alreadyCompleted)');
       return jsonResponse(200, {
         ok: true,
         alreadyCompleted: true,
@@ -131,7 +135,7 @@ export const handler = async (event) => {
     } catch (e) {
       if (e && e.name === 'AbortError') {
         console.error('pi-complete POST timeout', paymentId);
-        return jsonResponse(504, { error: 'Pi API timeout, try again' });
+        return jsonResponse(504, { error: 'Pi API timeout, tap Pay again' });
       }
       throw e;
     }
@@ -154,6 +158,8 @@ export const handler = async (event) => {
     });
   } catch (e) {
     console.error('pi-complete error:', e);
-    return jsonResponse(500, { error: e && e.message ? e.message : String(e) });
+    return jsonResponse(500, {
+      error: (e && e.message) || 'complete failed',
+    });
   }
 };

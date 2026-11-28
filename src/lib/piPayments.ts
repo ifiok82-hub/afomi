@@ -20,20 +20,22 @@ export interface PiU2APaymentResult {
 }
 
 const APPROVAL_TIMEOUT_MSG =
-  'Server approval timed out - check Netlify Functions logs for pi-approve, check PI_NETWORK_API_KEY is for Netlify app';
+  'Server approval timed out - check Netlify Functions > pi-approve > Logs';
 const COMPLETION_TIMEOUT_MSG =
-  'Server completion timed out - check Netlify Functions logs for pi-complete, check PI_NETWORK_API_KEY is for Netlify app';
+  'Server completion timed out - check Netlify Functions > pi-complete > Logs';
 
-async function fetchWithTimeout(
+async function fetchJsonWithTimeout(
   url: string,
   options: RequestInit,
   timeoutMs: number,
   timeoutMessage: string
-): Promise<Response> {
+): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    return { ok: res.ok, status: res.status, data };
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
       throw new Error(timeoutMessage);
@@ -44,13 +46,14 @@ async function fetchWithTimeout(
   }
 }
 
-async function parseErrorResponse(res: Response, fallback: string): Promise<string> {
-  const data = (await res.json().catch(() => ({}))) as {
-    error?: string;
-    detail?: unknown;
-  };
+function formatBackendError(
+  data: Record<string, unknown>,
+  status: number,
+  fallback: string
+): string {
+  const errStr = typeof data.error === 'string' && data.error ? data.error : `${fallback} (${status})`;
   const detailText = typeof data.detail === 'string' && data.detail ? ` (${data.detail})` : '';
-  return `${data.error || fallback}${detailText}`;
+  return `${errStr}${detailText}`;
 }
 
 async function runGenericU2APayment(opts: {
@@ -95,7 +98,7 @@ async function runGenericU2APayment(opts: {
         {
           onReadyForServerApproval: async (paymentId: string) => {
             try {
-              const res = await fetchWithTimeout(
+              const { ok, status, data } = await fetchJsonWithTimeout(
                 '/.netlify/functions/pi-approve',
                 {
                   method: 'POST',
@@ -113,9 +116,8 @@ async function runGenericU2APayment(opts: {
                 9000,
                 APPROVAL_TIMEOUT_MSG
               );
-              if (!res.ok) {
-                const msg = await parseErrorResponse(res, `Server approval failed (${res.status})`);
-                const err = new Error(msg);
+              if (!ok) {
+                const err = new Error(formatBackendError(data, status, 'Server approval failed'));
                 failOnce(err);
                 throw err;
               }
@@ -128,7 +130,7 @@ async function runGenericU2APayment(opts: {
           },
           onReadyForServerCompletion: async (paymentId: string, txid: string) => {
             try {
-              const res = await fetchWithTimeout(
+              const { ok, status, data } = await fetchJsonWithTimeout(
                 '/.netlify/functions/pi-complete',
                 {
                   method: 'POST',
@@ -136,7 +138,7 @@ async function runGenericU2APayment(opts: {
                   body: JSON.stringify({
                     paymentId,
                     txid,
-                    amount: opts.amount,
+                    amount: cleanAmount,
                     payerUid,
                     taskId: opts.taskId,
                     productId: opts.productId,
@@ -147,17 +149,8 @@ async function runGenericU2APayment(opts: {
                 9000,
                 COMPLETION_TIMEOUT_MSG
               );
-              const data = (await res.json().catch(() => ({}))) as {
-                ok?: boolean;
-                error?: string;
-                detail?: unknown;
-              };
-              if (!res.ok || !data.ok) {
-                const detailText =
-                  typeof data.detail === 'string' && data.detail ? ` (${data.detail})` : '';
-                failOnce(
-                  new Error(`${data.error || `Server completion failed (${res.status})`}${detailText}`)
-                );
+              if (!ok || !data.ok) {
+                failOnce(new Error(formatBackendError(data, status, 'Server completion failed')));
                 return;
               }
               if (!settled) {
@@ -298,7 +291,7 @@ export async function handleIncompletePayment(payment: {
   transaction?: { txid?: string };
 }): Promise<{ resolved: boolean; status: string }> {
   try {
-    const res = await fetchWithTimeout(
+    const { ok, data } = await fetchJsonWithTimeout(
       '/.netlify/functions/pi-complete',
       {
         method: 'POST',
@@ -312,9 +305,11 @@ export async function handleIncompletePayment(payment: {
       8000,
       COMPLETION_TIMEOUT_MSG
     );
-    if (!res.ok) return { resolved: false, status: 'FAILED' };
-    const data = (await res.json()) as { ok?: boolean; escrow?: string };
-    return { resolved: Boolean(data.ok), status: data.escrow || 'COMPLETED' };
+    if (!ok) return { resolved: false, status: 'FAILED' };
+    return {
+      resolved: Boolean(data.ok),
+      status: typeof data.escrow === 'string' ? data.escrow : 'COMPLETED',
+    };
   } catch {
     return { resolved: false, status: 'FAILED' };
   }
@@ -375,7 +370,7 @@ export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPa
             onReadyForServerApproval: async (paymentId: string) => {
               try {
                 onPhase?.('approving');
-                const res = await fetchWithTimeout(
+                const { ok, status, data } = await fetchJsonWithTimeout(
                   '/.netlify/functions/pi-approve',
                   {
                     method: 'POST',
@@ -393,8 +388,8 @@ export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPa
                   9000,
                   APPROVAL_TIMEOUT_MSG
                 );
-                if (!res.ok) {
-                  const errMsg = await parseErrorResponse(res, 'Server approval failed.');
+                if (!ok) {
+                  const errMsg = formatBackendError(data, status, 'Server approval failed');
                   resolveOnce({ ok: false, paymentId, error: errMsg });
                   throw new Error(errMsg);
                 }
@@ -408,7 +403,7 @@ export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPa
             onReadyForServerCompletion: async (paymentId: string, txid: string) => {
               try {
                 onPhase?.('completing');
-                const res = await fetchWithTimeout(
+                const { ok, status, data } = await fetchJsonWithTimeout(
                   '/.netlify/functions/pi-complete',
                   {
                     method: 'POST',
@@ -427,19 +422,12 @@ export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPa
                   9000,
                   COMPLETION_TIMEOUT_MSG
                 );
-                const data = (await res.json().catch(() => ({}))) as {
-                  ok?: boolean;
-                  error?: string;
-                  detail?: unknown;
-                };
-                if (!res.ok || !data.ok) {
-                  const detailText =
-                    typeof data.detail === 'string' && data.detail ? ` (${data.detail})` : '';
+                if (!ok || !data.ok) {
                   resolveOnce({
                     ok: false,
                     paymentId,
                     txid,
-                    error: `${data.error || 'Backend payment verification failed.'}${detailText}`,
+                    error: formatBackendError(data, status, 'Backend payment verification failed'),
                   });
                   return;
                 }

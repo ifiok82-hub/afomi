@@ -70,6 +70,7 @@ export const MarketplaceScreen: React.FC<{
   const [reportTarget, setReportTarget] = useState<Product | null>(null);
   const [reportReason, setReportReason] = useState('');
   const [paying, setPaying] = useState(false);
+  const [paymentError, setPaymentError] = useState('');
 
   const isCartOpen = cartDrawerOpen || localCartOpen;
   const closeCart = () => {
@@ -108,19 +109,25 @@ export const MarketplaceScreen: React.FC<{
     e.stopPropagation();
     if (paying) return;
     setPaying(true);
+    setPaymentError('');
     try {
       await authenticatePiSession();
       const res = await checkoutCartWithEscrow();
       if (res.ok) {
+        const successMsg = 'Payment held in escrow!';
+        window.alert(successMsg);
         closeCart();
         setTab('orders');
       } else {
-        window.alert(`Payment failed: ${res.message}`);
+        const errText = `Payment failed: ${res.message}`;
+        setPaymentError(errText);
+        window.alert(errText);
       }
     } catch (err: unknown) {
       console.error(err);
       const msg = err instanceof Error ? err.message : String(err || 'Unknown Pi error');
       const errorMsg = `Payment failed: ${msg}`;
+      setPaymentError(errorMsg);
       showToast(errorMsg, 'error');
       window.alert(errorMsg);
     } finally {
@@ -136,6 +143,7 @@ export const MarketplaceScreen: React.FC<{
     e.stopPropagation();
     if (paying) return;
     setPaying(true);
+    setPaymentError('');
     try {
       await authenticatePiSession();
       await payForProduct({
@@ -153,6 +161,7 @@ export const MarketplaceScreen: React.FC<{
       console.error(err);
       const msg = err instanceof Error ? err.message : String(err || 'Unknown Pi error');
       const errorMsg = `Payment failed: ${msg}`;
+      setPaymentError(errorMsg);
       showToast(errorMsg, 'error');
       window.alert(errorMsg);
     } finally {
@@ -482,6 +491,12 @@ export const MarketplaceScreen: React.FC<{
                 </div>
               )}
 
+              {paymentError && (
+                <div className="rounded-xl bg-rose-50 border border-rose-200 p-3 text-xs font-semibold text-rose-700">
+                  {paymentError}
+                </div>
+              )}
+
               <div className="flex flex-col sm:flex-row gap-3">
                 <button
                   type="button"
@@ -614,6 +629,11 @@ export const MarketplaceScreen: React.FC<{
                   >
                     {piAuthLoading ? 'Connecting Pi Testnet...' : 'Login with Pi first'}
                   </button>
+                )}
+                {paymentError && (
+                  <div className="rounded-xl bg-rose-50 border border-rose-200 p-3 text-xs font-semibold text-rose-700">
+                    {paymentError}
+                  </div>
                 )}
                 <button
                   type="button"

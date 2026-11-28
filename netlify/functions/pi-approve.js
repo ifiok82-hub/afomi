@@ -1,5 +1,5 @@
 const PI_API_BASE = 'https://api.minepi.com/v2/payments';
-const PI_TIMEOUT_MS = 8000;
+const TIMEOUT = 8000;
 
 function jsonResponse(statusCode, body) {
   return {
@@ -11,7 +11,7 @@ function jsonResponse(statusCode, body) {
 
 async function fetchWithTimeout(url, options) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), PI_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), TIMEOUT);
   try {
     return await fetch(url, { ...options, signal: controller.signal });
   } finally {
@@ -29,22 +29,26 @@ export const handler = async (event) => {
     try {
       body = JSON.parse(event.body || '{}');
     } catch (e) {
-      return jsonResponse(400, { ok: false, error: 'Invalid JSON request body', detail: e.message });
+      return jsonResponse(400, {
+        ok: false,
+        error: 'Invalid JSON request body',
+        detail: e && e.message ? e.message : String(e),
+      });
     }
 
     const paymentId = typeof body.paymentId === 'string' ? body.paymentId.trim() : '';
     const payerUid = typeof body.payerUid === 'string' ? body.payerUid.trim() : '';
-    const amount = Number(body.amount);
+    const amount = body.amount !== undefined && body.amount !== null ? Number(body.amount) : NaN;
     const taskId = typeof body.taskId === 'string' ? body.taskId.trim() : '';
     const productId = typeof body.productId === 'string' ? body.productId.trim() : '';
     const bodyItemId = typeof body.itemId === 'string' ? body.itemId.trim() : '';
 
-    console.log('pi-approve start', paymentId, amount, payerUid);
+    console.log('pi-approve start', paymentId, amount);
 
-    if (!paymentId || !payerUid || !Number.isFinite(amount) || amount <= 0) {
+    if (!paymentId) {
       return jsonResponse(400, {
         ok: false,
-        error: 'Missing or invalid paymentId, amount (> 0), or payerUid.',
+        error: 'Missing paymentId.',
       });
     }
 
@@ -67,15 +71,15 @@ export const handler = async (event) => {
     } catch (e) {
       if (e && e.name === 'AbortError') {
         console.error('pi-approve GET timeout', paymentId);
-        return jsonResponse(504, { error: 'Pi API timeout, try again' });
+        return jsonResponse(504, { error: 'Pi API timeout, tap Pay again' });
       }
       throw e;
     }
 
     if (verifyRes.status === 404) {
-      console.error('pi-approve GET 404 payment_not_found', paymentId);
+      console.error('pi-approve GET 404 payment_not_found_stale', paymentId);
       return jsonResponse(400, {
-        error: 'payment_not_found - use API key for Netlify app afomii.netlify.app, start fresh payment',
+        error: 'payment_not_found_stale - cancel old payment, start fresh',
       });
     }
 
@@ -93,26 +97,28 @@ export const handler = async (event) => {
     const itemId =
       taskId || productId || bodyItemId || meta.taskId || meta.productId || meta.itemId || null;
 
-    if (Number(payment.amount) !== Number(amount)) {
-      return jsonResponse(400, {
-        error: `Payment amount mismatch: expected ${amount}, got ${payment.amount}`,
-      });
+    if (Number.isFinite(amount) && amount > 0) {
+      if (Math.abs(Number(payment.amount) - amount) > 0.0001) {
+        return jsonResponse(400, {
+          error: `Payment amount mismatch: expected ${amount}, got ${payment.amount}`,
+        });
+      }
     }
 
-    if (payment.user_uid !== payerUid) {
+    if (payerUid && payment.user_uid && payment.user_uid !== payerUid) {
       return jsonResponse(400, {
         error: 'Payment user_uid mismatch against payerUid',
       });
     }
 
-    if (payment.direction !== 'user_to_app') {
+    if (payment.direction && payment.direction !== 'user_to_app') {
       return jsonResponse(400, {
         error: `Invalid payment direction: ${payment.direction}`,
       });
     }
 
     if (payment.status && payment.status.developer_approved) {
-      console.log('pi-approve already approved', paymentId);
+      console.log('pi-approve done', paymentId, '(alreadyApproved)');
       return jsonResponse(200, { ok: true, alreadyApproved: true, paymentId });
     }
 
@@ -138,7 +144,7 @@ export const handler = async (event) => {
     } catch (e) {
       if (e && e.name === 'AbortError') {
         console.error('pi-approve POST timeout', paymentId);
-        return jsonResponse(504, { error: 'Pi API timeout, try again' });
+        return jsonResponse(504, { error: 'Pi API timeout, tap Pay again' });
       }
       throw e;
     }
@@ -156,6 +162,8 @@ export const handler = async (event) => {
     return jsonResponse(200, { ok: true, paymentId });
   } catch (e) {
     console.error('pi-approve error:', e);
-    return jsonResponse(500, { error: e && e.message ? e.message : String(e) });
+    return jsonResponse(500, {
+      error: (e && e.message) || 'approve failed',
+    });
   }
 };
