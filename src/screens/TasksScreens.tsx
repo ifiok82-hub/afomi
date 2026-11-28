@@ -642,26 +642,31 @@ export const PostTaskPage: React.FC = () => {
     if (paying) return;
     setPaying(true);
     setErrorMsg('');
-    const res = await postTaskWithEscrow({
-      title: title.trim(),
-      category,
-      payPerWorker,
-      totalWorkers,
-      instructions: instructionsText
-        .split('\n')
-        .map((s) => s.trim())
-        .filter(Boolean),
-      exampleOutput,
-      deadline,
-      difficulty,
-      estimatedTime,
-      simulateFailure,
-    });
-    setPaying(false);
-    if (res.ok) {
-      setStep('success');
-    } else {
-      setErrorMsg(res.message);
+    try {
+      const res = await postTaskWithEscrow({
+        title: title.trim(),
+        category,
+        payPerWorker,
+        totalWorkers,
+        instructions: instructionsText
+          .split('\n')
+          .map((s) => s.trim())
+          .filter(Boolean),
+        exampleOutput,
+        deadline,
+        difficulty,
+        estimatedTime,
+        simulateFailure,
+      });
+      if (res.ok) {
+        setStep('success');
+      } else {
+        setErrorMsg(res.message);
+      }
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Pi payment failed.');
+    } finally {
+      setPaying(false);
     }
   };
 

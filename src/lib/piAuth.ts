@@ -60,16 +60,25 @@ export function onIncompletePaymentFound(payment: {
   identifier?: string;
   transaction?: { txid?: string };
 }) {
-  if (!payment?.identifier) return;
-  void fetch('/.netlify/functions/pi-complete', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      paymentId: payment.identifier,
-      txid: payment.transaction?.txid || null,
-      resume: true,
-    }),
-  }).catch(() => undefined);
+  try {
+    if (!payment?.identifier) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    void fetch('/.netlify/functions/pi-complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        paymentId: payment.identifier,
+        txid: payment.transaction?.txid || null,
+        resume: true,
+      }),
+    })
+      .catch(() => undefined)
+      .finally(() => clearTimeout(timer));
+  } catch {
+    // Ignore incomplete-payment resume errors so fresh payments can proceed
+  }
 }
 
 export async function signInWithPi(): Promise<PiSession> {
@@ -81,11 +90,25 @@ export async function signInWithPi(): Promise<PiSession> {
   const accessToken = auth?.accessToken;
   if (!accessToken) throw new Error('No accessToken returned by Pi authentication');
 
-  const res = await fetch(APP_STUDIO_LOGIN, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ accessToken }),
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 9000);
+  let res: Response;
+  try {
+    res = await fetch(APP_STUDIO_LOGIN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({ accessToken }),
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('App Studio login timed out. Please try again.');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+
   if (!res.ok) throw new Error('App Studio login failed: ' + res.status);
 
   const data = await res.json();

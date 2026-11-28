@@ -105,11 +105,16 @@ export const MarketplaceScreen: React.FC<{
   const handleCheckout = async () => {
     if (paying) return;
     setPaying(true);
-    const res = await checkoutCartWithEscrow();
-    setPaying(false);
-    if (res.ok) {
-      closeCart();
-      setTab('orders');
+    try {
+      const res = await checkoutCartWithEscrow();
+      if (res.ok) {
+        closeCart();
+        setTab('orders');
+      }
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Pi checkout failed.', 'error');
+    } finally {
+      setPaying(false);
     }
   };
 

@@ -1,4 +1,5 @@
 const PI_API_BASE = 'https://api.minepi.com/v2/payments';
+const PI_TIMEOUT_MS = 8000;
 
 function jsonResponse(statusCode, body) {
   return {
@@ -8,81 +9,85 @@ function jsonResponse(statusCode, body) {
   };
 }
 
+async function fetchWithTimeout(url, options) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PI_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export const handler = async (event) => {
-  if (event.httpMethod !== 'POST') {
-    return jsonResponse(405, { ok: false, error: 'Method not allowed', detail: event.httpMethod });
-  }
-
-  let body;
   try {
-    body = JSON.parse(event.body || '{}');
-  } catch (err) {
-    console.error('[AFOMI pi-complete] Invalid JSON body:', err);
-    return jsonResponse(400, {
-      ok: false,
-      error: 'Invalid JSON request body',
-      detail: err instanceof Error ? err.message : 'JSON parse failure',
-    });
-  }
+    if (event.httpMethod !== 'POST') {
+      return jsonResponse(405, { ok: false, error: 'Method not allowed' });
+    }
 
-  const paymentId = typeof body.paymentId === 'string' ? body.paymentId.trim() : '';
-  const txid = typeof body.txid === 'string' && body.txid.trim() ? body.txid.trim() : null;
-  const taskId = typeof body.taskId === 'string' ? body.taskId.trim() : '';
-  const productId = typeof body.productId === 'string' ? body.productId.trim() : '';
-  const bodyItemId = typeof body.itemId === 'string' ? body.itemId.trim() : '';
-  const itemType = typeof body.itemType === 'string' ? body.itemType.trim() : '';
+    let body;
+    try {
+      body = JSON.parse(event.body || '{}');
+    } catch (e) {
+      return jsonResponse(400, { ok: false, error: 'Invalid JSON request body', detail: e.message });
+    }
 
-  if (!paymentId) {
-    return jsonResponse(400, {
-      ok: false,
-      error: 'Missing paymentId.',
-      detail: 'paymentId is required',
-    });
-  }
+    const paymentId = typeof body.paymentId === 'string' ? body.paymentId.trim() : '';
+    const txid = typeof body.txid === 'string' && body.txid.trim() ? body.txid.trim() : null;
 
-  const apiKey = (process.env.PI_NETWORK_API_KEY || '').trim();
-  if (!apiKey) {
-    console.error('[AFOMI pi-complete] Missing PI_NETWORK_API_KEY environment variable.');
-    return jsonResponse(500, {
-      ok: false,
-      error: 'Server PI_NETWORK_API_KEY not configured in Netlify',
-      detail: 'PI_NETWORK_API_KEY env var is empty or unset.',
-    });
-  }
+    console.log('pi-complete start', paymentId, txid);
 
-  try {
-    const verifyRes = await fetch(`${PI_API_BASE}/${encodeURIComponent(paymentId)}`, {
-      method: 'GET',
-      headers: {
-        Authorization: `Key ${apiKey}`,
-      },
-      signal: AbortSignal.timeout(3500),
-    });
+    if (!paymentId) {
+      return jsonResponse(400, { ok: false, error: 'Missing paymentId.' });
+    }
+
+    const apiKey = (process.env.PI_NETWORK_API_KEY || '').trim();
+    if (!apiKey) {
+      return jsonResponse(500, {
+        ok: false,
+        error: 'Server PI_NETWORK_API_KEY not configured in Netlify',
+      });
+    }
+
+    let verifyRes;
+    try {
+      verifyRes = await fetchWithTimeout(`${PI_API_BASE}/${encodeURIComponent(paymentId)}`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Key ${apiKey}`,
+        },
+      });
+    } catch (e) {
+      if (e && e.name === 'AbortError') {
+        console.error('pi-complete GET timeout', paymentId);
+        return jsonResponse(504, { error: 'Pi API timeout, try again' });
+      }
+      throw e;
+    }
+
+    if (verifyRes.status === 404) {
+      console.error('pi-complete GET 404 payment_not_found', paymentId);
+      return jsonResponse(400, {
+        error: 'payment_not_found - stale payment or wrong API key for afomii.netlify.app, start fresh payment',
+      });
+    }
 
     if (!verifyRes.ok) {
-      const respText = await verifyRes.text().catch(() => '');
-      console.error('[AFOMI pi-complete] Pi lookup failed:', verifyRes.status, respText);
-      return jsonResponse(502, {
-        ok: false,
-        error: `Pi Platform payment lookup failed (${verifyRes.status}).`,
-        detail: respText || verifyRes.statusText,
+      const detail = await verifyRes.text().catch(() => verifyRes.statusText);
+      console.error('pi-complete GET failed', verifyRes.status, detail);
+      return jsonResponse(400, {
+        error: `Pi Platform payment lookup failed (${verifyRes.status})`,
+        detail,
       });
     }
 
     const payment = await verifyRes.json();
-    const meta = payment.metadata && typeof payment.metadata === 'object' ? payment.metadata : {};
-    const itemId =
-      taskId || productId || bodyItemId || meta.taskId || meta.productId || meta.itemId || '';
     const chainTxid =
       payment.transaction && payment.transaction.txid ? String(payment.transaction.txid) : null;
 
     if (txid && chainTxid && txid !== chainTxid) {
-      const detail = `Body txid ${txid} does not match chain txid ${chainTxid}`;
-      console.error('[AFOMI pi-complete] txid mismatch:', detail);
       return jsonResponse(400, {
-        ok: false,
         error: 'txid mismatch against Pi Platform payment transaction.',
-        detail,
       });
     }
 
@@ -92,67 +97,63 @@ export const handler = async (event) => {
     const commission = Number((amount * 0.08).toFixed(6));
 
     if (payment.status && payment.status.developer_completed) {
+      console.log('pi-complete already completed', paymentId);
       return jsonResponse(200, {
         ok: true,
         alreadyCompleted: true,
         escrow: 'held',
         workerShare,
         commission,
-        itemId: itemId || null,
       });
     }
 
     if (!effectiveTxid) {
       return jsonResponse(400, {
-        ok: false,
         error: 'Missing blockchain txid to complete payment.',
-        detail: 'Neither payment.transaction.txid nor request body txid was present.',
       });
     }
 
-    // Log paymentId + txid BEFORE calling complete for idempotency (no slow DB calls)
-    console.log('[AFOMI pi-complete] Idempotent pre-complete log:', {
-      paymentId,
-      txid: effectiveTxid,
-      itemId: itemId || null,
-      itemType: itemType || meta.type || null,
-      amount,
-    });
+    console.log('pi-complete pre-complete', { paymentId, txid: effectiveTxid, status: payment.status });
 
-    const completeRes = await fetch(`${PI_API_BASE}/${encodeURIComponent(paymentId)}/complete`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Key ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ txid: effectiveTxid }),
-      signal: AbortSignal.timeout(4000),
-    });
+    let completeRes;
+    try {
+      completeRes = await fetchWithTimeout(
+        `${PI_API_BASE}/${encodeURIComponent(paymentId)}/complete`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Key ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ txid: effectiveTxid }),
+        }
+      );
+    } catch (e) {
+      if (e && e.name === 'AbortError') {
+        console.error('pi-complete POST timeout', paymentId);
+        return jsonResponse(504, { error: 'Pi API timeout, try again' });
+      }
+      throw e;
+    }
 
     if (!completeRes.ok) {
-      const respText = await completeRes.text().catch(() => '');
-      console.error('[AFOMI pi-complete] Pi complete rejected:', completeRes.status, respText);
-      return jsonResponse(502, {
-        ok: false,
-        error: `Pi Platform payment completion failed (${completeRes.status}).`,
-        detail: respText || completeRes.statusText,
+      const detail = await completeRes.text().catch(() => completeRes.statusText);
+      console.error('pi-complete POST failed', completeRes.status, detail);
+      return jsonResponse(400, {
+        error: `Pi Platform payment completion failed (${completeRes.status})`,
+        detail,
       });
     }
 
-    // Hold in escrow; worker/seller gets 92% ONLY after client approves work / delivery
+    console.log('pi-complete done', paymentId);
     return jsonResponse(200, {
       ok: true,
       escrow: 'held',
       workerShare,
       commission,
-      itemId: itemId || null,
     });
-  } catch (err) {
-    console.error('[AFOMI pi-complete] Unexpected error:', err);
-    return jsonResponse(500, {
-      ok: false,
-      error: 'Internal error while completing Pi payment.',
-      detail: err instanceof Error ? err.message : String(err),
-    });
+  } catch (e) {
+    console.error('pi-complete error:', e);
+    return jsonResponse(500, { error: e && e.message ? e.message : String(e) });
   }
 };

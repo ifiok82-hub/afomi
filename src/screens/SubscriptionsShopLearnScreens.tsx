@@ -34,6 +34,7 @@ export const SubscriptionsPage: React.FC = () => {
     subscribeWithEscrow,
     confirmSubscriptionDelivery,
     cancelSubscription,
+    showToast,
   } = useAfomi();
 
   const [search, setSearch] = useState('');
@@ -275,9 +276,17 @@ export const SubscriptionsPage: React.FC = () => {
                 onClick={async () => {
                   if (submitting) return;
                   setSubmitting(true);
-                  const res = await subscribeWithEscrow(approvingPlan.id);
-                  setSubmitting(false);
-                  if (res.ok) setApprovingPlan(null);
+                  try {
+                    const res = await subscribeWithEscrow(approvingPlan.id);
+                    if (res.ok) setApprovingPlan(null);
+                  } catch (err) {
+                    showToast(
+                      err instanceof Error ? err.message : 'Subscription payment failed.',
+                      'error'
+                    );
+                  } finally {
+                    setSubmitting(false);
+                  }
                 }}
                 className="flex-1 min-h-[46px] rounded-xl bg-[#6A1B9A] hover:bg-[#581482] disabled:bg-slate-300 disabled:text-slate-600 text-white text-xs font-bold inline-flex items-center justify-center gap-2 cursor-pointer"
               >
