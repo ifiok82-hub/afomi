@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useAfomi } from '../context/AfomiContext';
 import { AfomiImage, EscrowStatusBadge, FundsLockedTag, PiValue } from '../components/AfomiUI';
+import { payForProduct } from '../lib/piPayments';
 import { Product, ProductCategory } from '../types/afomi';
 
 const MARKET_CATEGORIES: ProductCategory[] = [
@@ -48,11 +49,11 @@ export const MarketplaceScreen: React.FC<{
     updateCartQty,
     removeFromCart,
     checkoutCartWithEscrow,
-    buyNowWithEscrow,
     confirmOrderDelivery,
     autoReleaseOrder3Days,
     disputeOrder,
     reportListing,
+    showToast,
   } = useAfomi();
 
   const [tab, setTab] = useState<'shop' | 'orders'>('shop');
@@ -115,11 +116,24 @@ export const MarketplaceScreen: React.FC<{
   const handleBuyNow = async (product: Product) => {
     if (paying) return;
     setPaying(true);
-    const res = await buyNowWithEscrow(product);
-    setPaying(false);
-    if (res.ok) {
+    try {
+      await payForProduct({
+        productId: product.id,
+        productTitle: product.title || product.name,
+        amount: Number(product.pricePi),
+        sellerUid: product.sellerUid || '',
+      });
+      const successMsg = 'Payment held in escrow!';
+      showToast(successMsg, 'success');
+      window.alert(successMsg);
       setSelectedProduct(null);
       setTab('orders');
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Pi payment failed.';
+      showToast(errorMsg, 'error');
+      window.alert(errorMsg);
+    } finally {
+      setPaying(false);
     }
   };
 
@@ -448,7 +462,7 @@ export const MarketplaceScreen: React.FC<{
               <div className="flex flex-col sm:flex-row gap-3">
                 <button
                   type="button"
-                  disabled={!user?.piAuthenticated || paying}
+                  disabled={paying}
                   onClick={() => void handleBuyNow(selectedProduct)}
                   className="flex-1 min-h-[48px] rounded-2xl bg-[#6A1B9A] hover:bg-[#581482] disabled:bg-slate-200 disabled:text-slate-500 text-white font-bold text-sm flex items-center justify-center gap-2 cursor-pointer"
                 >
@@ -466,9 +480,7 @@ export const MarketplaceScreen: React.FC<{
                   ) : (
                     <>
                       <Lock className="w-4 h-4 text-[#FFC107]" />
-                      <span>
-                        {user?.piAuthenticated ? 'Buy Now with Pi (Lock in Escrow)' : 'Please Login with Pi first'}
-                      </span>
+                      <span>Buy Now with Pi (Lock in Escrow)</span>
                     </>
                   )}
                 </button>

@@ -7,22 +7,32 @@ export interface PayForTaskParams {
   workerUid?: string;
 }
 
-export interface PayForTaskResult {
+export interface PayForProductParams {
+  productId: string;
+  productTitle: string;
+  amount: number;
+  sellerUid?: string;
+}
+
+export interface PiU2APaymentResult {
   paymentId: string;
   txid: string;
 }
 
-export async function payForTask({
-  taskId,
-  taskTitle,
-  amount,
-  workerUid = '',
-}: PayForTaskParams): Promise<PayForTaskResult> {
+async function runGenericU2APayment(opts: {
+  amount: number;
+  memo: string;
+  itemType: 'task' | 'product';
+  taskId?: string;
+  productId?: string;
+  itemId: string;
+  buildMetadata: (payerUid: string) => Record<string, unknown>;
+}): Promise<PiU2APaymentResult> {
   if (typeof window === 'undefined' || !window.Pi) {
     throw new Error('Pi SDK not available. Please open AFOMI in Pi Browser.');
   }
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw new Error('Invalid task payment amount.');
+  if (!Number.isFinite(opts.amount) || opts.amount <= 0) {
+    throw new Error('Invalid payment amount.');
   }
 
   await initPi();
@@ -34,16 +44,10 @@ export async function payForTask({
     throw new Error('Pi.createPayment is unavailable in this Pi SDK environment.');
   }
 
-  const memo = `AFOMI Task - ${taskTitle}`.slice(0, 100);
-  const metadata = {
-    type: 'task_escrow',
-    taskId,
-    payerUid,
-    workerUid,
-    app: 'AFOMI',
-  };
+  const memo = opts.memo.slice(0, 100);
+  const metadata = opts.buildMetadata(payerUid);
 
-  return new Promise<PayForTaskResult>((resolve, reject) => {
+  return new Promise<PiU2APaymentResult>((resolve, reject) => {
     let settled = false;
     const failOnce = (err: Error) => {
       if (settled) return;
@@ -52,17 +56,32 @@ export async function payForTask({
     };
 
     Pi.createPayment!(
-      { amount, memo, metadata },
+      { amount: opts.amount, memo, metadata },
       {
         onReadyForServerApproval: async (paymentId: string) => {
           const res = await fetch('/.netlify/functions/pi-approve', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ paymentId, taskId, amount, payerUid }),
+            body: JSON.stringify({
+              paymentId,
+              amount: opts.amount,
+              payerUid,
+              taskId: opts.taskId,
+              productId: opts.productId,
+              itemId: opts.itemId,
+              itemType: opts.itemType,
+            }),
           });
           if (!res.ok) {
-            const data = (await res.json().catch(() => ({}))) as { error?: string };
-            const err = new Error(data.error || `Server approval failed (${res.status})`);
+            const data = (await res.json().catch(() => ({}))) as {
+              error?: string;
+              detail?: unknown;
+            };
+            const detailText =
+              typeof data.detail === 'string' && data.detail ? ` (${data.detail})` : '';
+            const err = new Error(
+              `${data.error || `Server approval failed (${res.status})`}${detailText}`
+            );
             failOnce(err);
             throw err;
           }
@@ -72,11 +91,28 @@ export async function payForTask({
             const res = await fetch('/.netlify/functions/pi-complete', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ paymentId, txid, taskId, amount, payerUid }),
+              body: JSON.stringify({
+                paymentId,
+                txid,
+                amount: opts.amount,
+                payerUid,
+                taskId: opts.taskId,
+                productId: opts.productId,
+                itemId: opts.itemId,
+                itemType: opts.itemType,
+              }),
             });
-            const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+            const data = (await res.json().catch(() => ({}))) as {
+              ok?: boolean;
+              error?: string;
+              detail?: unknown;
+            };
             if (!res.ok || !data.ok) {
-              failOnce(new Error(data.error || `Server completion failed (${res.status})`));
+              const detailText =
+                typeof data.detail === 'string' && data.detail ? ` (${data.detail})` : '';
+              failOnce(
+                new Error(`${data.error || `Server completion failed (${res.status})`}${detailText}`)
+              );
               return;
             }
             if (!settled) {
@@ -95,6 +131,51 @@ export async function payForTask({
         },
       }
     );
+  });
+}
+
+export async function payForTask({
+  taskId,
+  taskTitle,
+  amount,
+  workerUid = '',
+}: PayForTaskParams): Promise<PiU2APaymentResult> {
+  return runGenericU2APayment({
+    amount,
+    memo: `AFOMI Task - ${taskTitle}`,
+    itemType: 'task',
+    taskId,
+    itemId: taskId,
+    buildMetadata: (payerUid) => ({
+      type: 'task_escrow',
+      taskId,
+      payerUid,
+      workerUid,
+      app: 'AFOMI',
+    }),
+  });
+}
+
+export async function payForProduct({
+  productId,
+  productTitle,
+  amount,
+  sellerUid = '',
+}: PayForProductParams): Promise<PiU2APaymentResult> {
+  return runGenericU2APayment({
+    amount,
+    memo: `AFOMI Product - ${productTitle}`,
+    itemType: 'product',
+    productId,
+    itemId: productId,
+    buildMetadata: (payerUid) => ({
+      type: 'product_escrow',
+      productId,
+      itemId: productId,
+      payerUid,
+      sellerUid,
+      app: 'AFOMI',
+    }),
   });
 }
 
@@ -198,7 +279,15 @@ export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPa
       await initPi();
       const session = await signInWithPi();
       const payerUid = session.uid;
-      const taskId = String(metadata.taskId || metadata.id || `afomi_${Date.now()}`);
+      const itemType = String(metadata.type || 'market');
+      const taskId = typeof metadata.taskId === 'string' ? metadata.taskId : undefined;
+      const productId =
+        typeof metadata.productId === 'string'
+          ? metadata.productId
+          : itemType === 'market' && typeof metadata.id === 'string'
+          ? metadata.id
+          : undefined;
+      const itemId = String(taskId || productId || metadata.id || `afomi_${Date.now()}`);
 
       return new Promise<PiPaymentOutcome>((resolve) => {
         onPhase?.('creating');
@@ -206,7 +295,7 @@ export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPa
           {
             amount,
             memo: memo.slice(0, 100),
-            metadata: { ...metadata, taskId, payerUid, app: 'AFOMI' },
+            metadata: { ...metadata, itemId, payerUid, app: 'AFOMI' },
           },
           {
             onReadyForServerApproval: async (paymentId: string) => {
@@ -215,7 +304,15 @@ export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPa
                 const res = await fetch('/.netlify/functions/pi-approve', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ paymentId, taskId, amount, payerUid }),
+                  body: JSON.stringify({
+                    paymentId,
+                    amount,
+                    payerUid,
+                    taskId,
+                    productId,
+                    itemId,
+                    itemType,
+                  }),
                 });
                 if (!res.ok) {
                   const err = (await res.json().catch(() => ({}))) as { error?: string };
@@ -231,7 +328,16 @@ export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPa
                 const res = await fetch('/.netlify/functions/pi-complete', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ paymentId, txid, taskId, amount, payerUid }),
+                  body: JSON.stringify({
+                    paymentId,
+                    txid,
+                    amount,
+                    payerUid,
+                    taskId,
+                    productId,
+                    itemId,
+                    itemType,
+                  }),
                 });
                 const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
                 if (!res.ok || !data.ok) {

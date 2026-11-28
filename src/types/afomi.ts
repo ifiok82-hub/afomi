@@ -119,10 +119,12 @@ export interface TaskSubmission {
 export interface Product {
   id: string;
   name: string;
+  title?: string;
   category: Exclude<ProductCategory, 'All'>;
   pricePi: number;
   sellerName: string;
   sellerEmail: string;
+  sellerUid?: string;
   sellerRating: number;
   location: string;
   stock: number;
