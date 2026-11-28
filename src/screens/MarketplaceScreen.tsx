@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useAfomi } from '../context/AfomiContext';
 import { AfomiImage, EscrowStatusBadge, FundsLockedTag, PiValue } from '../components/AfomiUI';
+import { loginWithPi as authenticatePiSession } from '../lib/piAuth';
 import { payForProduct } from '../lib/piPayments';
 import { Product, ProductCategory } from '../types/afomi';
 
@@ -102,26 +103,41 @@ export const MarketplaceScreen: React.FC<{
     [cart]
   );
 
-  const handleCheckout = async () => {
+  const handleCheckout = async (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
     if (paying) return;
     setPaying(true);
     try {
+      await authenticatePiSession();
       const res = await checkoutCartWithEscrow();
       if (res.ok) {
         closeCart();
         setTab('orders');
+      } else {
+        window.alert(`Payment failed: ${res.message}`);
       }
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Pi checkout failed.', 'error');
+    } catch (err: unknown) {
+      console.error(err);
+      const msg = err instanceof Error ? err.message : String(err || 'Unknown Pi error');
+      const errorMsg = `Payment failed: ${msg}`;
+      showToast(errorMsg, 'error');
+      window.alert(errorMsg);
     } finally {
       setPaying(false);
     }
   };
 
-  const handleBuyNow = async (product: Product) => {
+  const handleBuyNow = async (
+    e: React.MouseEvent<HTMLButtonElement>,
+    product: Product
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
     if (paying) return;
     setPaying(true);
     try {
+      await authenticatePiSession();
       await payForProduct({
         productId: product.id,
         productTitle: product.title || product.name,
@@ -133,8 +149,10 @@ export const MarketplaceScreen: React.FC<{
       window.alert(successMsg);
       setSelectedProduct(null);
       setTab('orders');
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Pi payment failed.';
+    } catch (err: unknown) {
+      console.error(err);
+      const msg = err instanceof Error ? err.message : String(err || 'Unknown Pi error');
+      const errorMsg = `Payment failed: ${msg}`;
       showToast(errorMsg, 'error');
       window.alert(errorMsg);
     } finally {
@@ -468,7 +486,7 @@ export const MarketplaceScreen: React.FC<{
                 <button
                   type="button"
                   disabled={paying}
-                  onClick={() => void handleBuyNow(selectedProduct)}
+                  onClick={(e) => void handleBuyNow(e, selectedProduct)}
                   className="flex-1 min-h-[48px] rounded-2xl bg-[#6A1B9A] hover:bg-[#581482] disabled:bg-slate-200 disabled:text-slate-500 text-white font-bold text-sm flex items-center justify-center gap-2 cursor-pointer"
                 >
                   {paying ? (
@@ -600,7 +618,7 @@ export const MarketplaceScreen: React.FC<{
                 <button
                   type="button"
                   disabled={!user?.piAuthenticated || paying}
-                  onClick={() => void handleCheckout()}
+                  onClick={(e) => void handleCheckout(e)}
                   className="w-full min-h-[48px] rounded-2xl bg-[#6A1B9A] hover:bg-[#581482] disabled:bg-slate-200 disabled:text-slate-500 text-white font-bold text-sm flex items-center justify-center gap-2 cursor-pointer"
                 >
                   {paying ? (

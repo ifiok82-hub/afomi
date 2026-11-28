@@ -1,4 +1,4 @@
-import { initPi, signInWithPi } from './piAuth';
+import { loginWithPi } from './piAuth';
 
 export interface PayForTaskParams {
   taskId: string;
@@ -69,8 +69,7 @@ async function runGenericU2APayment(opts: {
     throw new Error('Invalid payment amount.');
   }
 
-  await initPi();
-  const session = await signInWithPi();
+  const session = await loginWithPi();
   const payerUid = session.uid;
 
   const Pi = window.Pi;
@@ -78,6 +77,7 @@ async function runGenericU2APayment(opts: {
     throw new Error('Pi.createPayment is unavailable in this Pi SDK environment.');
   }
 
+  const cleanAmount = Number(opts.amount.toFixed(7));
   const memo = opts.memo.slice(0, 100);
   const metadata = opts.buildMetadata(payerUid);
 
@@ -90,8 +90,8 @@ async function runGenericU2APayment(opts: {
     };
 
     try {
-      Pi.createPayment!(
-        { amount: opts.amount, memo, metadata },
+      const maybePromise = Pi.createPayment!(
+        { amount: cleanAmount, memo, metadata },
         {
           onReadyForServerApproval: async (paymentId: string) => {
             try {
@@ -102,7 +102,7 @@ async function runGenericU2APayment(opts: {
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
                     paymentId,
-                    amount: opts.amount,
+                    amount: cleanAmount,
                     payerUid,
                     taskId: opts.taskId,
                     productId: opts.productId,
@@ -171,11 +171,26 @@ async function runGenericU2APayment(opts: {
           onCancel: () => {
             failOnce(new Error('Payment was cancelled. Funds were not locked in escrow.'));
           },
-          onError: (error: Error) => {
-            failOnce(error instanceof Error ? error : new Error('Pi payment error.'));
+          onError: (error: unknown, payment?: { identifier?: string }) => {
+            console.error('Pi.createPayment onError:', error, payment);
+            const msg =
+              error instanceof Error
+                ? error.message
+                : error && typeof error === 'object' && 'message' in error
+                ? String((error as { message: unknown }).message)
+                : typeof error === 'string'
+                ? error
+                : 'Pi payment error.';
+            failOnce(new Error(msg || 'Pi payment error.'));
           },
         }
-      );
+      ) as unknown;
+      if (maybePromise && typeof (maybePromise as Promise<unknown>).catch === 'function') {
+        (maybePromise as Promise<unknown>).catch((err: unknown) => {
+          console.error('Pi.createPayment rejected:', err);
+          failOnce(err instanceof Error ? err : new Error(String(err || 'Pi payment failed.')));
+        });
+      }
     } catch (err) {
       failOnce(err instanceof Error ? err : new Error('Failed to start Pi payment.'));
     }
@@ -327,10 +342,9 @@ export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPa
     };
   }
 
-  if (isPiBrowserEnvironment() && window.Pi?.createPayment) {
+  if (typeof window !== 'undefined' && window.Pi?.createPayment) {
     try {
-      await initPi();
-      const session = await signInWithPi();
+      const session = await loginWithPi();
       const payerUid = session.uid;
       const itemType = String(metadata.type || 'market');
       const taskId = typeof metadata.taskId === 'string' ? metadata.taskId : undefined;

@@ -81,47 +81,65 @@ export function onIncompletePaymentFound(payment: {
   }
 }
 
+let piLoginInFlight: Promise<PiSession> | null = null;
+
 export async function signInWithPi(): Promise<PiSession> {
-  await initPi();
-  const Pi = window.Pi;
-  if (!Pi) throw new Error('Pi SDK unavailable');
+  if (piLoginInFlight) return piLoginInFlight;
+  piLoginInFlight = (async () => {
+    await initPi();
+    const Pi = window.Pi;
+    if (!Pi) throw new Error('Pi SDK unavailable');
 
-  const auth = await Pi.authenticate(['username', 'payments'], onIncompletePaymentFound);
-  const accessToken = auth?.accessToken;
-  if (!accessToken) throw new Error('No accessToken returned by Pi authentication');
+    const auth = await Pi.authenticate(['username', 'payments'], onIncompletePaymentFound);
+    const accessToken = auth?.accessToken;
+    if (!accessToken) throw new Error('No accessToken returned by Pi authentication');
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 9000);
-  let res: Response;
-  try {
-    res = await fetch(APP_STUDIO_LOGIN, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: controller.signal,
-      body: JSON.stringify({ accessToken }),
-    });
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw new Error('App Studio login timed out. Please try again.');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 9000);
+    let res: Response;
+    try {
+      res = await fetch(APP_STUDIO_LOGIN, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({ accessToken }),
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new Error('App Studio login timed out. Please try again.');
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
     }
-    throw err;
+
+    if (!res.ok) throw new Error('App Studio login failed: ' + res.status);
+
+    const data = await res.json();
+    const sessionToken = data?.sessionToken as string | undefined;
+    const uid = data?.user?.uid as string | undefined;
+    const username = data?.user?.username as string | undefined;
+    if (!sessionToken || !uid || !username) {
+      throw new Error('Invalid App Studio response');
+    }
+
+    const session: PiSession = { sessionToken, uid, username };
+    window.__AFOMI_PI_SESSION__ = session;
+    return session;
+  })();
+
+  try {
+    return await piLoginInFlight;
   } finally {
-    clearTimeout(timer);
+    piLoginInFlight = null;
   }
+}
 
-  if (!res.ok) throw new Error('App Studio login failed: ' + res.status);
-
-  const data = await res.json();
-  const sessionToken = data?.sessionToken as string | undefined;
-  const uid = data?.user?.uid as string | undefined;
-  const username = data?.user?.username as string | undefined;
-  if (!sessionToken || !uid || !username) {
-    throw new Error('Invalid App Studio response');
-  }
-
-  const session: PiSession = { sessionToken, uid, username };
-  window.__AFOMI_PI_SESSION__ = session;
-  return session;
+export async function loginWithPi(): Promise<PiSession> {
+  await initPi();
+  const existing = getPiSession();
+  if (existing) return existing;
+  return signInWithPi();
 }
 
 export function getPiSession(): PiSession | null {
