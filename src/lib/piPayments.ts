@@ -1,4 +1,102 @@
-import { initPi } from './piAuth';
+import { initPi, signInWithPi } from './piAuth';
+
+export interface PayForTaskParams {
+  taskId: string;
+  taskTitle: string;
+  amount: number;
+  workerUid?: string;
+}
+
+export interface PayForTaskResult {
+  paymentId: string;
+  txid: string;
+}
+
+export async function payForTask({
+  taskId,
+  taskTitle,
+  amount,
+  workerUid = '',
+}: PayForTaskParams): Promise<PayForTaskResult> {
+  if (typeof window === 'undefined' || !window.Pi) {
+    throw new Error('Pi SDK not available. Please open AFOMI in Pi Browser.');
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error('Invalid task payment amount.');
+  }
+
+  await initPi();
+  const session = await signInWithPi();
+  const payerUid = session.uid;
+
+  const Pi = window.Pi;
+  if (!Pi?.createPayment) {
+    throw new Error('Pi.createPayment is unavailable in this Pi SDK environment.');
+  }
+
+  const memo = `AFOMI Task - ${taskTitle}`.slice(0, 100);
+  const metadata = {
+    type: 'task_escrow',
+    taskId,
+    payerUid,
+    workerUid,
+    app: 'AFOMI',
+  };
+
+  return new Promise<PayForTaskResult>((resolve, reject) => {
+    let settled = false;
+    const failOnce = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+
+    Pi.createPayment!(
+      { amount, memo, metadata },
+      {
+        onReadyForServerApproval: async (paymentId: string) => {
+          const res = await fetch('/.netlify/functions/pi-approve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paymentId, taskId, amount, payerUid }),
+          });
+          if (!res.ok) {
+            const data = (await res.json().catch(() => ({}))) as { error?: string };
+            const err = new Error(data.error || `Server approval failed (${res.status})`);
+            failOnce(err);
+            throw err;
+          }
+        },
+        onReadyForServerCompletion: async (paymentId: string, txid: string) => {
+          try {
+            const res = await fetch('/.netlify/functions/pi-complete', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ paymentId, txid, taskId, amount, payerUid }),
+            });
+            const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+            if (!res.ok || !data.ok) {
+              failOnce(new Error(data.error || `Server completion failed (${res.status})`));
+              return;
+            }
+            if (!settled) {
+              settled = true;
+              resolve({ paymentId, txid });
+            }
+          } catch (err) {
+            failOnce(err instanceof Error ? err : new Error('Failed to complete Pi payment.'));
+          }
+        },
+        onCancel: () => {
+          failOnce(new Error('Payment was cancelled. Funds were not locked in escrow.'));
+        },
+        onError: (error: Error) => {
+          failOnce(error instanceof Error ? error : new Error('Pi payment error.'));
+        },
+      }
+    );
+  });
+}
 
 export interface PiPaymentCallbacks {
   amount: number;
@@ -16,18 +114,6 @@ export interface PiPaymentOutcome {
   txid?: string;
   cancelled?: boolean;
   error?: string;
-}
-
-interface PiPaymentSdk {
-  createPayment?: (
-    paymentData: { amount: number; memo: string; metadata: Record<string, unknown> },
-    callbacks: {
-      onReadyForServerApproval: (paymentId: string) => void;
-      onReadyForServerCompletion: (paymentId: string, txid: string) => void;
-      onCancel: (paymentId: string) => void;
-      onError: (error: Error, payment?: { identifier?: string }) => void;
-    }
-  ) => void;
 }
 
 export function isPiBrowserEnvironment(): boolean {
@@ -68,39 +154,25 @@ export async function handleIncompletePayment(payment: {
   transaction?: { txid?: string };
 }): Promise<{ resolved: boolean; status: string }> {
   try {
-    const res = await fetch('/api/pi/incomplete', {
+    const res = await fetch('/.netlify/functions/pi-complete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         paymentId: payment.identifier,
-        txid: payment.transaction?.txid || '',
+        txid: payment.transaction?.txid || null,
+        resume: true,
       }),
     });
     if (!res.ok) return { resolved: false, status: 'FAILED' };
-    const data = (await res.json()) as { resolved?: boolean; status?: string };
-    return { resolved: Boolean(data.resolved), status: data.status || 'PENDING' };
+    const data = (await res.json()) as { ok?: boolean; escrow?: string };
+    return { resolved: Boolean(data.ok), status: data.escrow || 'COMPLETED' };
   } catch {
     return { resolved: false, status: 'FAILED' };
   }
 }
 
 export async function checkServerIncompletePayments(): Promise<number> {
-  try {
-    const res = await fetch('/api/pi/payments');
-    if (!res.ok) return 0;
-    const data = (await res.json()) as { payments?: { paymentId: string; status: string; txid?: string }[] };
-    const pending = (data.payments || []).filter(
-      (p) => p.status === 'PENDING' || p.status === 'APPROVED'
-    );
-    for (const p of pending) {
-      if (p.txid) {
-        await handleIncompletePayment({ identifier: p.paymentId, transaction: { txid: p.txid } });
-      }
-    }
-    return pending.length;
-  } catch {
-    return 0;
-  }
+  return 0;
 }
 
 export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPaymentOutcome> {
@@ -114,68 +186,52 @@ export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPa
   }
 
   if (simulateFailure) {
-    const failedId = `pi_fail_${Date.now()}`;
-    await fetch('/api/pi/cancel', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        paymentId: failedId,
-        amount,
-        memo,
-        status: 'FAILED',
-        reason: 'Simulated payment failure before server approval',
-      }),
-    }).catch(() => undefined);
     return {
       ok: false,
-      paymentId: failedId,
+      paymentId: `pi_fail_${Date.now()}`,
       error: 'Pi Testnet payment failed. Funds were NOT locked in Escrow.',
     };
   }
 
-  const piSdk = (window as unknown as { Pi?: PiPaymentSdk }).Pi;
-  if (isPiBrowserEnvironment() && piSdk?.createPayment) {
+  if (isPiBrowserEnvironment() && window.Pi?.createPayment) {
     try {
       await initPi();
+      const session = await signInWithPi();
+      const payerUid = session.uid;
+      const taskId = String(metadata.taskId || metadata.id || `afomi_${Date.now()}`);
+
       return new Promise<PiPaymentOutcome>((resolve) => {
         onPhase?.('creating');
-        piSdk.createPayment!(
+        window.Pi!.createPayment!(
           {
             amount,
-            memo,
-            metadata: { ...metadata, network: 'testnet' },
+            memo: memo.slice(0, 100),
+            metadata: { ...metadata, taskId, payerUid, app: 'AFOMI' },
           },
           {
             onReadyForServerApproval: async (paymentId: string) => {
               try {
                 onPhase?.('approving');
-                const res = await fetch('/api/pi/approve', {
+                const res = await fetch('/.netlify/functions/pi-approve', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  credentials: 'same-origin',
-                  body: JSON.stringify({
-                    paymentId,
-                    amount,
-                    memo,
-                    metadata,
-                  }),
+                  body: JSON.stringify({ paymentId, taskId, amount, payerUid }),
                 });
                 if (!res.ok) {
                   const err = (await res.json().catch(() => ({}))) as { error?: string };
                   resolve({ ok: false, paymentId, error: err.error || 'Server approval failed.' });
                 }
               } catch {
-                resolve({ ok: false, paymentId, error: 'Network error calling /api/pi/approve.' });
+                resolve({ ok: false, paymentId, error: 'Network error calling pi-approve.' });
               }
             },
             onReadyForServerCompletion: async (paymentId: string, txid: string) => {
               try {
                 onPhase?.('completing');
-                const res = await fetch('/api/pi/complete', {
+                const res = await fetch('/.netlify/functions/pi-complete', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  credentials: 'same-origin',
-                  body: JSON.stringify({ paymentId, txid, amount }),
+                  body: JSON.stringify({ paymentId, txid, taskId, amount, payerUid }),
                 });
                 const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
                 if (!res.ok || !data.ok) {
@@ -190,15 +246,10 @@ export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPa
                 onPhase?.('verified');
                 resolve({ ok: true, paymentId, txid });
               } catch {
-                resolve({ ok: false, paymentId, error: 'Network error calling /api/pi/complete.' });
+                resolve({ ok: false, paymentId, error: 'Network error calling pi-complete.' });
               }
             },
-            onCancel: async (paymentId: string) => {
-              await fetch('/api/pi/cancel', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ paymentId, amount, memo, status: 'CANCELLED' }),
-              }).catch(() => undefined);
+            onCancel: (paymentId: string) => {
               resolve({
                 ok: false,
                 paymentId,
@@ -206,85 +257,26 @@ export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPa
                 error: 'Payment cancelled by user. Escrow funds were NOT locked.',
               });
             },
-            onError: async (error: Error, payment?: { identifier?: string }) => {
-              const paymentId = payment?.identifier || `err_${Date.now()}`;
-              await fetch('/api/pi/cancel', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  paymentId,
-                  amount,
-                  memo,
-                  status: 'FAILED',
-                  reason: error.message,
-                }),
-              }).catch(() => undefined);
+            onError: (error: Error, payment?: { identifier?: string }) => {
               resolve({
                 ok: false,
-                paymentId,
+                paymentId: payment?.identifier || `err_${Date.now()}`,
                 error: error.message || 'Pi payment encountered an error.',
               });
             },
           }
         );
       });
-    } catch {
-      // Fall through cleanly if Pi SDK is unavailable
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : 'Pi payment initialization failed.',
+      };
     }
   }
 
-  const paymentId = `pi_tn_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-  const txid = `tx_testnet_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-
-  try {
-    onPhase?.('creating');
-    await new Promise((r) => setTimeout(r, 250));
-
-    onPhase?.('approving');
-    const approveRes = await fetch('/api/pi/approve', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({
-        paymentId,
-        amount,
-        memo,
-        metadata: { ...metadata, network: 'testnet' },
-      }),
-    });
-    const approveData = (await approveRes.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-    if (!approveRes.ok || !approveData.ok) {
-      return {
-        ok: false,
-        paymentId,
-        error: approveData.error || 'Server payment approval failed.',
-      };
-    }
-
-    onPhase?.('completing');
-    const completeRes = await fetch('/api/pi/complete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({ paymentId, txid, amount }),
-    });
-    const completeData = (await completeRes.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-    if (!completeRes.ok || !completeData.ok) {
-      return {
-        ok: false,
-        paymentId,
-        txid,
-        error: completeData.error || 'Server payment completion verification failed.',
-      };
-    }
-
-    onPhase?.('verified');
-    return { ok: true, paymentId, txid };
-  } catch {
-    return {
-      ok: false,
-      paymentId,
-      error: 'Network failure while verifying Pi payment on backend.',
-    };
-  }
+  return {
+    ok: false,
+    error: 'Please open AFOMI in Pi Browser to complete real Pi U2A payment.',
+  };
 }

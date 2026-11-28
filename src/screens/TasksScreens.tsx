@@ -16,6 +16,7 @@ import {
 import { useAfomi } from '../context/AfomiContext';
 import { AfomiImage, EscrowStatusBadge, FundsLockedTag } from '../components/AfomiUI';
 import { GENERATED_IMAGES } from '../data/seedData';
+import { payForTask } from '../lib/piPayments';
 import { validatePiAmount, validateRequired, validateWorkersCount } from '../lib/validation';
 import { Task, TaskCategory } from '../types/afomi';
 
@@ -40,6 +41,7 @@ export const TasksPage: React.FC<{ initialTaskId?: string | null }> = ({ initial
     submitTaskWork,
     appealSubmission,
     reportListing,
+    showToast,
   } = useAfomi();
 
   const [category, setCategory] = useState<TaskCategory>('All');
@@ -54,6 +56,29 @@ export const TasksPage: React.FC<{ initialTaskId?: string | null }> = ({ initial
   const [appealDrafts, setAppealDrafts] = useState<Record<string, string>>({});
   const [reportTarget, setReportTarget] = useState<Task | null>(null);
   const [reportReason, setReportReason] = useState('');
+  const [payingTaskId, setPayingTaskId] = useState<string | null>(null);
+
+  const handlePayEscrow = async (task: Task) => {
+    const pricePi = Number(task.pricePi ?? task.payPerWorker);
+    setPayingTaskId(task.id);
+    try {
+      await payForTask({
+        taskId: task.id,
+        taskTitle: task.title,
+        amount: pricePi,
+        workerUid: task.workerUid || '',
+      });
+      const successMsg = 'Payment held in escrow! Worker will be paid after you approve work.';
+      showToast(successMsg, 'success');
+      window.alert(successMsg);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Pi payment failed.';
+      showToast(errorMsg, 'error');
+      window.alert(errorMsg);
+    } finally {
+      setPayingTaskId(null);
+    }
+  };
 
   const filteredTasks = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -255,7 +280,7 @@ export const TasksPage: React.FC<{ initialTaskId?: string | null }> = ({ initial
                         {task.status} · Spots Left: {task.spotsLeft}/{task.totalWorkers}
                       </div>
                     </div>
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex flex-wrap items-center justify-end gap-1.5">
                       <button
                         type="button"
                         aria-label="Report task"
@@ -266,6 +291,16 @@ export const TasksPage: React.FC<{ initialTaskId?: string | null }> = ({ initial
                         className="min-h-[40px] min-w-[40px] rounded-xl border border-[#E7E3EE] text-[#645E72] hover:text-rose-600 flex items-center justify-center cursor-pointer"
                       >
                         <Flag className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={payingTaskId === task.id}
+                        onClick={() => void handlePayEscrow(task)}
+                        className="min-h-[42px] px-3 py-2 rounded-xl bg-[#FFC107] hover:bg-[#f0b400] disabled:opacity-60 text-[#2B1F00] text-xs font-bold whitespace-nowrap cursor-pointer"
+                      >
+                        {payingTaskId === task.id
+                          ? 'Processing...'
+                          : `Pay ${Number(task.pricePi ?? task.payPerWorker)} Pi - Escrow`}
                       </button>
                       <button
                         type="button"
@@ -422,6 +457,20 @@ export const TasksPage: React.FC<{ initialTaskId?: string | null }> = ({ initial
                   </div>
                 </div>
               </div>
+
+              <button
+                type="button"
+                disabled={payingTaskId === selectedTask.id}
+                onClick={() => void handlePayEscrow(selectedTask)}
+                className="w-full min-h-[46px] rounded-2xl bg-[#FFC107] hover:bg-[#f0b400] disabled:opacity-60 text-[#2B1F00] font-bold text-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              >
+                <Lock className="w-4 h-4" />
+                <span>
+                  {payingTaskId === selectedTask.id
+                    ? 'Processing Pi Escrow Payment...'
+                    : `Pay ${Number(selectedTask.pricePi ?? selectedTask.payPerWorker)} Pi - Escrow`}
+                </span>
+              </button>
 
               <div>
                 <h3 className="text-sm font-bold text-[#1A1625] mb-2">Step-by-Step Instructions</h3>
@@ -800,7 +849,7 @@ export const PostTaskPage: React.FC = () => {
             <div className="text-xs text-[#645E72] space-y-1 pt-2 border-t border-[#E7E3EE]">
               <div>Task: {title}</div>
               <div>Spots Open Immediately: {totalWorkers}/{totalWorkers}</div>
-              <div>Flow: Pi.createPayment → /api/pi/approve → /api/pi/complete</div>
+              <div>Flow: Pi.createPayment → /.netlify/functions/pi-approve → /.netlify/functions/pi-complete</div>
             </div>
           </div>
 

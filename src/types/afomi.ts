@@ -86,6 +86,8 @@ export interface Task {
   exampleOutput: string;
   status: 'OPEN' | 'COMPLETED';
   createdAt: string;
+  pricePi?: number;
+  workerUid?: string;
   piPaymentId?: string;
   piTxId?: string;
 }

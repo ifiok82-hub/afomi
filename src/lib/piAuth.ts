@@ -6,6 +6,15 @@ declare global {
         scopes: string[],
         onIncompletePaymentFound: (payment: any) => void
       ) => Promise<{ accessToken?: string }>;
+      createPayment?: (
+        paymentData: { amount: number; memo: string; metadata: Record<string, unknown> },
+        callbacks: {
+          onReadyForServerApproval: (paymentId: string) => void | Promise<void>;
+          onReadyForServerCompletion: (paymentId: string, txid: string) => void | Promise<void>;
+          onCancel: (paymentId: string) => void;
+          onError: (error: Error, payment?: { identifier?: string }) => void;
+        }
+      ) => void;
     };
     __AFOMI_PI_SESSION__?: PiSession | null;
   }
@@ -47,8 +56,20 @@ export async function initPi(): Promise<void> {
   return piInitPromise;
 }
 
-function onIncompletePaymentFound(payment: any) {
-  console.log('AFOMI incomplete payment', payment?.identifier);
+export function onIncompletePaymentFound(payment: {
+  identifier?: string;
+  transaction?: { txid?: string };
+}) {
+  if (!payment?.identifier) return;
+  void fetch('/.netlify/functions/pi-complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      paymentId: payment.identifier,
+      txid: payment.transaction?.txid || null,
+      resume: true,
+    }),
+  }).catch(() => undefined);
 }
 
 export async function signInWithPi(): Promise<PiSession> {
@@ -56,7 +77,7 @@ export async function signInWithPi(): Promise<PiSession> {
   const Pi = window.Pi;
   if (!Pi) throw new Error('Pi SDK unavailable');
 
-  const auth = await Pi.authenticate(['username'], onIncompletePaymentFound);
+  const auth = await Pi.authenticate(['username', 'payments'], onIncompletePaymentFound);
   const accessToken = auth?.accessToken;
   if (!accessToken) throw new Error('No accessToken returned by Pi authentication');
 
