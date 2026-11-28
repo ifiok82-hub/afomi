@@ -16,7 +16,6 @@ import {
 import { useAfomi } from '../context/AfomiContext';
 import { AfomiImage, EscrowStatusBadge, FundsLockedTag } from '../components/AfomiUI';
 import { GENERATED_IMAGES } from '../data/seedData';
-import { loginWithPi as authenticatePiSession } from '../lib/piAuth';
 import { payForTask } from '../lib/piPayments';
 import { validatePiAmount, validateRequired, validateWorkersCount } from '../lib/validation';
 import { Task, TaskCategory } from '../types/afomi';
@@ -71,7 +70,6 @@ export const TasksPage: React.FC<{ initialTaskId?: string | null }> = ({ initial
     setPayingTaskId(task.id);
     setPaymentError('');
     try {
-      await authenticatePiSession();
       await payForTask({
         taskId: task.id,
         taskTitle: task.title,
@@ -84,7 +82,7 @@ export const TasksPage: React.FC<{ initialTaskId?: string | null }> = ({ initial
     } catch (err: unknown) {
       console.error(err);
       const msg = err instanceof Error ? err.message : String(err || 'Unknown Pi error');
-      const errorMsg = `Payment failed: ${msg}`;
+      const errorMsg = msg.startsWith('Old payment cancelled') ? msg : `Payment failed: ${msg}`;
       setPaymentError(errorMsg);
       showToast(errorMsg, 'error');
       window.alert(errorMsg);

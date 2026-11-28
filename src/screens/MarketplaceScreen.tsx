@@ -17,7 +17,6 @@ import {
 } from 'lucide-react';
 import { useAfomi } from '../context/AfomiContext';
 import { AfomiImage, EscrowStatusBadge, FundsLockedTag, PiValue } from '../components/AfomiUI';
-import { loginWithPi as authenticatePiSession } from '../lib/piAuth';
 import { payForProduct } from '../lib/piPayments';
 import { Product, ProductCategory } from '../types/afomi';
 
@@ -111,7 +110,6 @@ export const MarketplaceScreen: React.FC<{
     setPaying(true);
     setPaymentError('');
     try {
-      await authenticatePiSession();
       const res = await checkoutCartWithEscrow();
       if (res.ok) {
         const successMsg = 'Payment held in escrow!';
@@ -119,14 +117,16 @@ export const MarketplaceScreen: React.FC<{
         closeCart();
         setTab('orders');
       } else {
-        const errText = `Payment failed: ${res.message}`;
+        const errText = res.message.startsWith('Old payment cancelled')
+          ? res.message
+          : `Payment failed: ${res.message}`;
         setPaymentError(errText);
         window.alert(errText);
       }
     } catch (err: unknown) {
       console.error(err);
       const msg = err instanceof Error ? err.message : String(err || 'Unknown Pi error');
-      const errorMsg = `Payment failed: ${msg}`;
+      const errorMsg = msg.startsWith('Old payment cancelled') ? msg : `Payment failed: ${msg}`;
       setPaymentError(errorMsg);
       showToast(errorMsg, 'error');
       window.alert(errorMsg);
@@ -145,7 +145,6 @@ export const MarketplaceScreen: React.FC<{
     setPaying(true);
     setPaymentError('');
     try {
-      await authenticatePiSession();
       await payForProduct({
         productId: product.id,
         productTitle: product.title || product.name,
@@ -160,7 +159,7 @@ export const MarketplaceScreen: React.FC<{
     } catch (err: unknown) {
       console.error(err);
       const msg = err instanceof Error ? err.message : String(err || 'Unknown Pi error');
-      const errorMsg = `Payment failed: ${msg}`;
+      const errorMsg = msg.startsWith('Old payment cancelled') ? msg : `Payment failed: ${msg}`;
       setPaymentError(errorMsg);
       showToast(errorMsg, 'error');
       window.alert(errorMsg);

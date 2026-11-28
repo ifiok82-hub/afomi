@@ -60,25 +60,15 @@ export function onIncompletePaymentFound(payment: {
   identifier?: string;
   transaction?: { txid?: string };
 }) {
+  console.log('Ignoring stale incomplete payment', payment?.identifier);
   try {
-    if (!payment?.identifier) return;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-    void fetch('/.netlify/functions/pi-complete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: controller.signal,
-      body: JSON.stringify({
-        paymentId: payment.identifier,
-        txid: payment.transaction?.txid || null,
-        resume: true,
-      }),
-    })
-      .catch(() => undefined)
-      .finally(() => clearTimeout(timer));
+    if (typeof sessionStorage !== 'undefined' && payment?.identifier) {
+      sessionStorage.setItem('afomi_stale_payment', payment.identifier);
+    }
   } catch {
-    // Ignore incomplete-payment resume errors so fresh payments can proceed
+    // ignore storage errors
   }
+  return;
 }
 
 let piLoginInFlight: Promise<PiSession> | null = null;
@@ -136,9 +126,6 @@ export async function signInWithPi(): Promise<PiSession> {
 }
 
 export async function loginWithPi(): Promise<PiSession> {
-  await initPi();
-  const existing = getPiSession();
-  if (existing) return existing;
   return signInWithPi();
 }
 

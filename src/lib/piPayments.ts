@@ -19,10 +19,9 @@ export interface PiU2APaymentResult {
   txid: string;
 }
 
-const APPROVAL_TIMEOUT_MSG =
-  'Server approval timed out - check Netlify Functions > pi-approve > Logs';
-const COMPLETION_TIMEOUT_MSG =
-  'Server completion timed out - check Netlify Functions > pi-complete > Logs';
+const APPROVAL_TIMEOUT_MSG = 'Server approval timed out';
+const COMPLETION_TIMEOUT_MSG = 'Server completion timed out';
+const STALE_PAYMENT_MSG = 'Old payment cancelled. Please tap Pay again - you will see 2 popups.';
 
 async function fetchJsonWithTimeout(
   url: string,
@@ -51,7 +50,11 @@ function formatBackendError(
   status: number,
   fallback: string
 ): string {
-  const errStr = typeof data.error === 'string' && data.error ? data.error : `${fallback} (${status})`;
+  const rawErr = typeof data.error === 'string' ? data.error : '';
+  if (rawErr === 'payment_not_found_stale' || rawErr.startsWith('payment_not_found_stale')) {
+    return STALE_PAYMENT_MSG;
+  }
+  const errStr = rawErr || `${fallback} (${status})`;
   const detailText = typeof data.detail === 'string' && data.detail ? ` (${data.detail})` : '';
   return `${errStr}${detailText}`;
 }
@@ -74,6 +77,14 @@ async function runGenericU2APayment(opts: {
 
   const session = await loginWithPi();
   const payerUid = session.uid;
+
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem('afomi_stale_payment');
+    }
+  } catch {
+    // ignore storage errors
+  }
 
   const Pi = window.Pi;
   if (!Pi?.createPayment) {
@@ -290,29 +301,8 @@ export async function handleIncompletePayment(payment: {
   identifier: string;
   transaction?: { txid?: string };
 }): Promise<{ resolved: boolean; status: string }> {
-  try {
-    const { ok, data } = await fetchJsonWithTimeout(
-      '/.netlify/functions/pi-complete',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          paymentId: payment.identifier,
-          txid: payment.transaction?.txid || null,
-          resume: true,
-        }),
-      },
-      8000,
-      COMPLETION_TIMEOUT_MSG
-    );
-    if (!ok) return { resolved: false, status: 'FAILED' };
-    return {
-      resolved: Boolean(data.ok),
-      status: typeof data.escrow === 'string' ? data.escrow : 'COMPLETED',
-    };
-  } catch {
-    return { resolved: false, status: 'FAILED' };
-  }
+  console.log('Ignoring stale incomplete payment', payment?.identifier);
+  return { resolved: false, status: 'IGNORED' };
 }
 
 export async function checkServerIncompletePayments(): Promise<number> {
@@ -341,6 +331,13 @@ export async function executePiPayment(params: PiPaymentCallbacks): Promise<PiPa
     try {
       const session = await loginWithPi();
       const payerUid = session.uid;
+      try {
+        if (typeof sessionStorage !== 'undefined') {
+          sessionStorage.removeItem('afomi_stale_payment');
+        }
+      } catch {
+        // ignore storage errors
+      }
       const itemType = String(metadata.type || 'market');
       const taskId = typeof metadata.taskId === 'string' ? metadata.taskId : undefined;
       const productId =

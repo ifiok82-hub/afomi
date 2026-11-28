@@ -72,7 +72,7 @@ export const handler = async (event) => {
     if (verifyRes.status === 404) {
       console.error('pi-complete GET 404 payment_not_found_stale', paymentId);
       return jsonResponse(400, {
-        error: 'payment_not_found_stale - cancel old payment, start fresh',
+        error: 'payment_not_found_stale',
       });
     }
 
